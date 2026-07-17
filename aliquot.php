@@ -5,7 +5,7 @@ $CONFIG = [
 	'min_digits'      =>  90,
 	'max_digits'      =>  120,
 	'fetch_at_once'   =>  5,
-	'sleep_seconds'   =>  5,
+	'sleep_seconds'   =>  65,
 	'log_factors'     => 'aliquot_factorization.txt', // set to emptystring to disable
 	'api_url'         => 'https://www.mersenne.ca/aliquot/index.php',
 ];
