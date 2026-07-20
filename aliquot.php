@@ -36,9 +36,15 @@ function FilesCleanup() {
 	return true;
 }
 
-function CheckForExit($deletefile=false) { if (file_exists('exit.txt')) { echo 
-'exit.txt found, exiting'."\n"; if ($deletefile) { unlink('exit.txt'); } return 
-true; } return false; }
+function CheckForExit($deletefile=false) {
+	if (file_exists('exit.txt')) {
+		echo 'exit.txt found, exiting'."\n";
+		if ($deletefile) {
+			unlink('exit.txt');
+		} return true;
+	}
+	return false;
+}
 
 /////////////////////////////////////////////////////////////////////
 if (empty($CONFIG['gimps_login'])) {
@@ -87,7 +93,10 @@ do {
 								file_put_contents($CONFIG['log_factors'], $one_line_factorization.PHP_EOL, FILE_APPEND);
 							}
 							if ($ch = curl_init()) {
-								$data = ['compositefactorization' => $one_line_factorization];
+								$data = [
+									'compositefactorization' => $one_line_factorization,
+									'gimps_login'            => $CONFIG['gimps_login'],
+								];
 								curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 								curl_setopt($ch, CURLOPT_TIMEOUT,        30);
 								curl_setopt($ch, CURLOPT_URL, $CONFIG['api_url']);

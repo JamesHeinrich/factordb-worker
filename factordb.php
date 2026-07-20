@@ -68,6 +68,8 @@ function FactorDB_login() {
 				'pass'   => $CONFIG['login_pass'],
 				'dlogin' => 'Login',
 			);
+			curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+			curl_setopt($ch, CURLOPT_TIMEOUT,        30);
 			curl_setopt($ch, CURLOPT_URL, 'http://factordb.com/login.php');
 			curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
 			curl_setopt($ch, CURLOPT_COOKIEJAR, $CONFIG['cookie_jar']);
@@ -232,6 +234,8 @@ echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $l
 function curlGEThttp($URL, $description='') {
 	global $CONFIG;
 	if ($ch = curl_init()) {
+		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+		curl_setopt($ch, CURLOPT_TIMEOUT,        30);
 		curl_setopt($ch, CURLOPT_URL, $URL);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
 		if (strtolower(substr($URL, 0, 5)) == 'https') {
@@ -265,8 +269,8 @@ function FactorDB_fetch() {
 	global $CONFIG;
 	$CONFIG['_last_fetch_time'] = time(); // not really a config setting, but a convenient already-global variable
 
-	$number_to_grab     = 50; // assume fetch 50 assignments if we have no rate data
-	$max_number_to_grab = 50; // do not allow batch sizes larger than this; factordb.com sometimes times out if you try to grab too many at once
+	$number_to_grab     =  50; // assume fetch 50 assignments if we have no rate data
+	$max_number_to_grab = 200; // do not allow batch sizes larger than this; factordb.com sometimes times out if you try to grab too many at once
 	if (is_readable($CONFIG['rate_filename']) && ($rateRaw = trim(@file_get_contents($CONFIG['rate_filename'])))) {
 		if (preg_match('#^(.+)\\t([0-9]+)[\\r\\n]+(.+)\\t([0-9]+)$#', $rateRaw, $matches)) {
 			list($dummy, $date1, $count1, $date2, $count2) = $matches;
@@ -387,6 +391,8 @@ function FactorDB_submit() {
 			if ($ch = curl_init()) {
 				// https://electrictoolbox.com/php-curl-form-post/
 				$ReportURL = 'http://factordb.com/report.php';
+				curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+				curl_setopt($ch, CURLOPT_TIMEOUT,        30);
 				curl_setopt($ch, CURLOPT_URL, $ReportURL);
 				curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
 				if (file_exists($CONFIG['cookie_jar']) && filesize($CONFIG['cookie_jar'])) {
@@ -518,7 +524,7 @@ function FactorDB_runbatch() {
 //echo $output."\n";
 //echo '~~~~~~~~~~~~~~~~~~~~~~~~~'."\n";
 //echo 'Checking for: #'.preg_quote('***factorization:***').'[\r\n]+('.$bignumber.')=([0-9\\*]+)[\r\n]+ans = 1$#sm'."\n";
-					if (preg_match('#'.preg_quote('***factorization:***').'[\r\n]+('.$bignumber.'=([0-9\\*]+))[\r\n]+ans = 1$#sm', $output, $matches)) {
+					if (preg_match('#'.preg_quote('***factorization:***').'[\r\n]+('.$bignumber.'=([0-9\\*]+))[\r\n]+ans = 1($|[\r\n])#sm', $output, $matches)) {
 						// one-line factorization output (optional) added in YAFU 3.0
 						// could just use it verbatim but may as well take the short time to verify that the listed factors add up
 						list($dummy, $one_line_factorization, $factorlist) = $matches;
@@ -537,6 +543,7 @@ function FactorDB_runbatch() {
 						}
 					} elseif (preg_match('#'.preg_quote('***factors found***').'(.+)ans = 1$#sm', $output, $factorsfound)) {
 echo basename(__FILE__).':'.__LINE__.': one-line-fail'."\n";
+file_put_contents('one-line-fail.txt', $output);
 exit(1);
 						preg_match_all('#^([PC])([0-9]+) = ([0-9]+)$#m', $factorsfound[1], $matchset, PREG_SET_ORDER);
 						if (!empty($matchset)) {
