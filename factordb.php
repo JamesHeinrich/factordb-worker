@@ -267,10 +267,8 @@ echo "~~~~~~~~~~~~~~~\n".$output."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
 
 function FactorDB_fetch() {
 	global $CONFIG;
-	$CONFIG['_last_fetch_time'] = time(); // not really a config setting, but a convenient already-global variable
 
-	$number_to_grab     =  50; // assume fetch 50 assignments if we have no rate data
-	$max_number_to_grab = 200; // do not allow batch sizes larger than this; factordb.com sometimes times out if you try to grab too many at once
+	$number_to_grab = 50; // assume fetch 50 assignments if we have no rate data
 	if (is_readable($CONFIG['rate_filename']) && ($rateRaw = trim(@file_get_contents($CONFIG['rate_filename'])))) {
 		if (preg_match('#^(.+)\\t([0-9]+)[\\r\\n]+(.+)\\t([0-9]+)$#', $rateRaw, $matches)) {
 			list($dummy, $date1, $count1, $date2, $count2) = $matches;
@@ -278,22 +276,32 @@ function FactorDB_fetch() {
 			$seconds_per = $seconds / max($count1 - $count2, 1);
 			$number_to_grab = max(ceil($CONFIG['batch_time'] / max($seconds_per, 0.1)), 1);
 
-			if ($number_to_grab > $max_number_to_grab) {
-				echo date('Y-m-d H:i:s').' Target batch size for '.$CONFIG['batch_time'].'s is '.$number_to_grab.', but limiting to '.$max_number_to_grab.' for server reasons'."\n";
-			}
-			$number_to_grab = min($max_number_to_grab, $number_to_grab);
-			echo date('Y-m-d H:i:s').' Completed '.($count1 - $count2).' assignments in '.$seconds.' seconds, '.number_format($seconds_per, 3).'s avg, grabbing '.$number_to_grab.' new assignments'."\n";
+			//echo date('Y-m-d H:i:s').' Target batch size for '.$CONFIG['batch_time'].'s is '.$number_to_grab."\n";
+			//if ($number_to_grab > $max_number_to_grab) {
+			//	echo date('Y-m-d H:i:s').' Target batch size for '.$CONFIG['batch_time'].'s is '.$number_to_grab.', but limiting to '.$max_number_to_grab.' for server reasons'."\n";
+			//}
+			//$number_to_grab = min($max_number_to_grab, $number_to_grab);
+			echo date('Y-m-d H:i:s').' Completed '.($count1 - $count2).' assignments in '.$seconds.' seconds, '.number_format($seconds_per, 3).'s avg, grabbing '.$number_to_grab.' new assignments for '.ceil($CONFIG['batch_time']).'s batch'."\n";
 		}
 	}
 
 	// http://factordb.com/listtype.php?t=3&download=1&mindig=80&start=12345&perpage=100
-	$URL  = 'http://factordb.com/listtype.php?t=3';
-	$URL .= '&download=1';
-	$URL .= '&mindig='.$CONFIG['min_digits'];
-	$URL .= '&start='.($CONFIG['skip_first'] ?: 0);
-	$URL .= '&perpage='.$number_to_grab;
-	echo date('Y-m-d H:i:s').' Fetching '.$number_to_grab.' new assignments from '.$URL."\n";
-	$output = curlGEThttp($URL, 'Work fetch'); // plaintext output contains \n lineends
+	$max_number_to_grab = 100; // do not allow batch sizes larger than this; factordb.com sometimes times out if you try to grab too many at once
+	$output  = '';
+	$fetched = 0;
+	do {
+		$thisFetchSize = max(1, min($max_number_to_grab, $number_to_grab - $fetched));
+		$URL  = 'http://factordb.com/listtype.php?t=3';
+		$URL .= '&download=1';
+		$URL .= '&mindig='.$CONFIG['min_digits'];
+		$URL .= '&start='.($CONFIG['skip_first'] ?: 0) + $fetched;
+		$URL .= '&perpage='.$thisFetchSize;
+		echo date('Y-m-d H:i:s').' Fetching '.$thisFetchSize.' new assignments from '.$URL;
+		$fetch_starttime = microtime(true);
+		$output .= curlGEThttp($URL, 'Work fetch'); // plaintext output contains \n lineends
+		echo ' (done in '.number_format(microtime(true) - $fetch_starttime, 3).'s)'."\n";
+		$fetched += $thisFetchSize;
+	} while ($fetched < $number_to_grab);
 //echo '$output = '.strlen($output).' bytes'."\n";
 //echo '~~~~~~~~~~~~~~~~~~~~~~~~~~'."\n";
 //echo $output."\n";
@@ -319,6 +327,7 @@ function FactorDB_fetch() {
 	} else {
 		file_put_contents($CONFIG['in_filename'], ''); // set filesize to zero to prevent confusion/conflict
 	}
+	$CONFIG['_last_fetch_time'] = time(); // not really a config setting, but a convenient already-global variable
 	return true;
 }
 
@@ -402,8 +411,10 @@ function FactorDB_submit() {
 				curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
 echo $result_lines_text;
 				do {
-		    		echo date('Y-m-d H:i:s').' Submitting '.($submit_counter ? number_format($submit_counter) : 'UNKNOWN NUMBER') .' results ('.number_format(strlen($result_lines_text)).' bytes) to '.$ReportURL."\n";
+		    		echo date('Y-m-d H:i:s').' Submitting '.($submit_counter ? number_format($submit_counter) : 'UNKNOWN NUMBER') .' results ('.number_format(strlen($result_lines_text)).' bytes) to '.$ReportURL;
+		    		$submit_starttime = microtime(true);
 					$output = curl_exec($ch);
+					echo ' (done in '.number_format(microtime(true) - $submit_starttime, 3).'s)'."\n";
 					$info = curl_getinfo($ch);
 					if ($info['http_code'] != 200) {
 						echo date('Y-m-d H:i:s').' Submit Results failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
