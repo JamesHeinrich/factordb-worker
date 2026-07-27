@@ -2,7 +2,7 @@
 // factordb.com work fetch/submit script
 // James Heinrich <james@mersenne.ca>
 // https://www.mersenneforum.org/node/22384
-// last-modified: 2026-04-22
+// last-modified: 2026-07-26
 
 $configFileName = 'factordb.json';
 $CONFIG = array();
@@ -389,7 +389,7 @@ function FactorDB_submit() {
 
 		for ($submit_slice_offset = 0; $submit_slice_offset < count($result_lines); $submit_slice_offset += $submit_slice_size) {
 			$slice = array_slice($result_lines, $submit_slice_offset, $submit_slice_size, true);
-			$submit_counter = count($slice);
+			$slice_counter = count($slice);
 
 			//$result_lines_text = implode("\n", $result_lines)."\n";
 			$result_lines_text = implode("\n", $slice)."\n";
@@ -411,7 +411,7 @@ function FactorDB_submit() {
 				curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
 echo $result_lines_text;
 				do {
-		    		echo date('Y-m-d H:i:s').' Submitting '.($submit_counter ? number_format($submit_counter) : 'UNKNOWN NUMBER') .' results ('.number_format(strlen($result_lines_text)).' bytes) to '.$ReportURL;
+		    		echo date('Y-m-d H:i:s').' Submitting '.$slice_counter.' results ('.number_format(strlen($result_lines_text)).' bytes, batch '.($submit_slice_offset + 1).'-'.($submit_slice_offset + $submit_slice_size).' of '.$submit_counter.') to '.$ReportURL;
 		    		$submit_starttime = microtime(true);
 					$output = curl_exec($ch);
 					echo ' (done in '.number_format(microtime(true) - $submit_starttime, 3).'s)'."\n";
@@ -430,7 +430,7 @@ echo "~~~~~~~~~~~~~~~\n".$output."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
 
 				if (preg_match('#Found ([0-9]+) factors and [0-9]+ ECM#', $output, $matches)) {
 					// Found 122 factors and 0 ECM/P-1/P+1 results.
-					echo 'Server accepted '.$matches[1].' factors from '.$submit_counter.' factorizations ('.number_format(($matches[1] / $submit_counter) * 100).'%)'."\n";
+					echo 'Server accepted '.$matches[1].' factors from '.$slice_counter.' factorizations ('.number_format(($matches[1] / $slice_counter) * 100).'%)'."\n";
 				} else {
 					file_put_contents('results_submission_INCOMPLETE_'.date('Ymd-His').'.html', $output);
 					file_put_contents('results_submission_INCOMPLETE_'.date('Ymd-His').'.txt', $result_lines_text);

@@ -70,8 +70,14 @@ do {
 //echo $command."\n";
 					if ($pipe = popen($command, 'rb')) {
 						while ($buffer = fread($pipe, 1024)) { // buffer smaller than 1024 might not get all the data we need at once
-							echo $buffer;
 							$output .= $buffer;
+/*
+							// total yield: 17800, q=1122001 (0.00043 sec/rel)
+							$buffer = preg_replace('#(total yield: [0-9]+, q=[0-9]+, \([0-9\.]+ sec/rel\))([\r\n]+)#', '$1'."\r", $buffer);
+							//nfs: commencing algebraic side lattice sieving over range: 764000 - 766000
+							$buffer = preg_replace('#(nfs: commencing algebraic side lattice sieving over range: [0-9]+ \- [0-9]+)([\r\n]+)#', '$1'."\r", $buffer);
+*/
+							echo $buffer;
 						}
 						pclose($pipe);
 					} else {
@@ -91,6 +97,7 @@ do {
 								$composite = gmp_mul($composite, $factor);
 							}
 							if (gmp_strval($composite) == $bignumber) {
+
 								if ($CONFIG['log_factors']) {
 									file_put_contents($CONFIG['log_factors'], $one_line_factorization.PHP_EOL, FILE_APPEND);
 								}
@@ -109,26 +116,32 @@ do {
 									do {
 										$curl_output = curl_exec($ch);
 										$info = curl_getinfo($ch);
-										$JSON = json_decode($curl_output, true);
-										if (json_last_error() == JSON_ERROR_NONE) {
-											if (!empty($JSON['warning'])) {
-												print_r($JSON['warning']);
+										if ($info['http_code'] == 200) {
+											$JSON = json_decode($curl_output, true);
+											if (json_last_error() == JSON_ERROR_NONE) {
+												if (!empty($JSON['warning'])) {
+													print_r($JSON['warning']);
+												}
+												if (!empty($JSON['error'])) {
+													print_r($JSON['error']);
+												}
+											} else {
+var_dump($curl_output);
+var_dump($info);
+												echo date('Y-m-d H:i:s').' '.$CONFIG['api_url'].' did not return valid JSON'."\n";
+												echo date('Y-m-d H:i:s').' trying again in '.$CONFIG['sleep_seconds'].'s'."\n";
+												sleep($CONFIG['sleep_seconds']);
+//exit;
 											}
-											if (!empty($JSON['error'])) {
-												print_r($JSON['error']);
-											}
+											echo 'Reported C'.strlen($bignumber).' '.$bignumber.' to '.$CONFIG['api_url']."\n\n".str_repeat('~', 50)."\n\n";
+										} elseif ($info['http_code'] == 0) {
+											echo date('Y-m-d H:i:s').' report to '.$CONFIG['api_url'].' did not succeed, trying again in '.$CONFIG['sleep_seconds'].'s'."\n";
+											sleep($CONFIG['sleep_seconds']);
 										} else {
-											echo $CONFIG['api_url'].' did not return valid JSON'."\n";
+echo 'Unexpected CURL http_code='.$info['http_code']."\n";
 var_dump($curl_output);
 var_dump($info);
 exit;
-										}
-										$info = curl_getinfo($ch);
-										if ($info['http_code'] == 200) {
-											echo 'Reported C'.strlen($bignumber).' '.$bignumber.' to '.$CONFIG['api_url']."\n\n".str_repeat('~', 50)."\n\n";
-										} else {
-											echo date('Y-m-d H:i:s').' report to '.$CONFIG['api_url'].' did not succeed, trying again in '.$CONFIG['sleep_seconds'].'s'."\n";
-											sleep($CONFIG['sleep_seconds']);
 										}
 									} while ($info['http_code'] != 200);
 								} else {
