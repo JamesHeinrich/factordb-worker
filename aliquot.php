@@ -59,15 +59,12 @@ do {
 		break;
 	}
 	$URL_fetch = $CONFIG['api_url'].'?composites_to_factor='.$CONFIG['fetch_at_once'].'&min_digits='.$CONFIG['min_digits'].'&max_digits='.$CONFIG['max_digits'].'&gimps_login='.$CONFIG['gimps_login'];
-//echo $URL_fetch."\n";
 	if ($work = file_get_contents($URL_fetch)) {
-//echo $work."\n";
 		foreach (explode("\n", $work) as $bignumber) {
 			if ($bignumber = trim($bignumber)) {
 				if (ctype_digit($bignumber)) {
 					$command = (IS_WINDOWS ? '' : 'nice -n 19 ').escapeshellarg($CONFIG['yafu_executable']).' '.escapeshellarg($bignumber).($CONFIG['siqs_nfs_limit'] ? ' -max_siqs '.intval($CONFIG['siqs_nfs_limit']).' -max_nfs '.intval($CONFIG['siqs_nfs_limit']) : '');
 					$output = '';
-//echo $command."\n";
 					if ($pipe = popen($command, 'rb')) {
 						while ($buffer = fread($pipe, 1024)) { // buffer smaller than 1024 might not get all the data we need at once
 							$output .= $buffer;
@@ -136,6 +133,9 @@ var_dump($info);
 											echo 'Reported C'.strlen($bignumber).' '.$bignumber.' to '.$CONFIG['api_url']."\n\n".str_repeat('~', 50)."\n\n";
 										} elseif ($info['http_code'] == 0) {
 											echo date('Y-m-d H:i:s').' report to '.$CONFIG['api_url'].' did not succeed, trying again in '.$CONFIG['sleep_seconds'].'s'."\n";
+											sleep($CONFIG['sleep_seconds']);
+										} elseif ($info['http_code'] == 503) {
+											echo date('Y-m-d H:i:s').' server down for maintenance, trying again in '.$CONFIG['sleep_seconds'].'s'."\n";
 											sleep($CONFIG['sleep_seconds']);
 										} else {
 echo 'Unexpected CURL http_code='.$info['http_code']."\n";

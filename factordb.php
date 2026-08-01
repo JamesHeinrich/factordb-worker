@@ -2,7 +2,7 @@
 // factordb.com work fetch/submit script
 // James Heinrich <james@mersenne.ca>
 // https://www.mersenneforum.org/node/22384
-// last-modified: 2026-07-26
+// last-modified: 2026-07-29
 
 $configFileName = 'factordb.json';
 $CONFIG = array();
@@ -411,7 +411,7 @@ function FactorDB_submit() {
 				curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
 echo $result_lines_text;
 				do {
-		    		echo date('Y-m-d H:i:s').' Submitting '.$slice_counter.' results ('.number_format(strlen($result_lines_text)).' bytes, batch '.($submit_slice_offset + 1).'-'.($submit_slice_offset + $submit_slice_size).' of '.$submit_counter.') to '.$ReportURL;
+		    		echo date('Y-m-d H:i:s').' Submitting '.$slice_counter.' results ('.number_format(strlen($result_lines_text)).' bytes, batch '.($submit_slice_offset + 1).'-'.min($submit_slice_offset + $submit_slice_size, $submit_counter).' of '.$submit_counter.') to '.$ReportURL;
 		    		$submit_starttime = microtime(true);
 					$output = curl_exec($ch);
 					echo ' (done in '.number_format(microtime(true) - $submit_starttime, 3).'s)'."\n";
