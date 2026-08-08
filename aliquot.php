@@ -7,6 +7,8 @@ $CONFIG = [
 	'fetch_at_once'   =>  1,
 	'sleep_seconds'   =>  65,
 	'siqs_nfs_limit'  =>  false, // should normally be FALSE, can set to an integer (e.g. 100) to prevent doing SIQS/NFS on big numbers, only do ECM and SIQS/NFS on composites smaller than this
+	'pretest'         =>  false, // should normally be FALSE, can set to TRUE to enable pretest-only pre-factoring of composites
+	'pretest_ratio'   =>  0.25,  // only applies for "pretest" mode, for normal use set "plan" in yafu.ini
 	'log_factors'     => 'aliquot_factorization.txt', // set to emptystring to disable
 	'api_url'         => 'https://www.mersenne.ca/aliquot/index.php',
 ];
@@ -18,6 +20,8 @@ function FilesCleanup() {
 	$FilesToCleanUp = array(
 		realpath('session.log'),
 		realpath('ggnfs.log'),
+		realpath('factor.log'),
+		realpath('factor.json'),
 		realpath('siqs.dat'),
 		realpath('__tmpbatchfile'),
 	);
@@ -58,12 +62,18 @@ do {
 	if (CheckForExit(true)) {
 		break;
 	}
-	$URL_fetch = $CONFIG['api_url'].'?composites_to_factor='.$CONFIG['fetch_at_once'].'&min_digits='.$CONFIG['min_digits'].'&max_digits='.$CONFIG['max_digits'].'&gimps_login='.$CONFIG['gimps_login'];
+	$URL_fetch = $CONFIG['api_url'].'?'.($CONFIG['pretest'] ? 'composites_to_pretest' : 'composites_to_factor').'='.$CONFIG['fetch_at_once'].'&min_digits='.$CONFIG['min_digits'].'&max_digits='.$CONFIG['max_digits'].'&gimps_login='.$CONFIG['gimps_login'];
 	if ($work = file_get_contents($URL_fetch)) {
 		foreach (explode("\n", $work) as $bignumber) {
 			if ($bignumber = trim($bignumber)) {
 				if (ctype_digit($bignumber)) {
-					$command = (IS_WINDOWS ? '' : 'nice -n 19 ').escapeshellarg($CONFIG['yafu_executable']).' '.escapeshellarg($bignumber).($CONFIG['siqs_nfs_limit'] ? ' -max_siqs '.intval($CONFIG['siqs_nfs_limit']).' -max_nfs '.intval($CONFIG['siqs_nfs_limit']) : '');
+					$command  = (IS_WINDOWS ? '' : 'nice -n 19 ');
+					$command .= escapeshellarg($CONFIG['yafu_executable']);
+					$command .= ' '.escapeshellarg($bignumber);
+					$command .= ' -terse';
+					$command .= ($CONFIG['siqs_nfs_limit'] ? ' -max_siqs '.intval($CONFIG['siqs_nfs_limit']).' -max_nfs '.intval($CONFIG['siqs_nfs_limit']) : '');
+					$command .= ($CONFIG['pretest'] ? ' -pretest -plan custom -pretest_ratio '.number_format($CONFIG['pretest_ratio'], 4) : '');
+
 					$output = '';
 					if ($pipe = popen($command, 'rb')) {
 						while ($buffer = fread($pipe, 1024)) { // buffer smaller than 1024 might not get all the data we need at once
@@ -81,13 +91,18 @@ do {
 						echo 'FAIL line '.__LINE__."\n";
 						exit(1);
 					}
-//file_put_contents('moo.txt', $output);
 //echo 'Looking for "#'.preg_quote('***factorization:***').'[\r\n]+('.$bignumber.'=([0-9\\*]+))[\r\n]+ans = 1($|[\r\n])#sm"'."\n";
-					if (preg_match('#'.preg_quote('***factorization:***').'[\r\n]+(([0-9]+)=([0-9\\*]+))[\r\n]+ans = 1($|[\r\n])#sm', $output, $matches)) {
+					if (preg_match('#'.preg_quote('***factorization:***').'[\r\n]+(([0-9]+)=([0-9\\*]+))[\r\n]+ans = ([0-9]+)($|[\r\n])#sm', $output, $matches)) {
 						// one-line factorization output (optional) added in YAFU 3.0
 						// could just use it verbatim but may as well take the short time to verify that the listed factors add up (on rare occasion YAFU has had an error where they do not match)
-						list($dummy, $one_line_factorization, $one_line_bignumber, $factorlist) = $matches;
+						list($dummy, $one_line_factorization, $one_line_bignumber, $factorlist, $remainder) = $matches;
 						if ($bignumber == $one_line_bignumber) { // check again YAFU errors (e.g. https://www.mersenneforum.org/node/1108401?p=1120597#post1120597 or https://www.mersenneforum.org/node/1108401?p=1121395#post1121395)
+							if (($remainder != '1') && ($CONFIG['pretest'] !== true)) {
+								echo "\n\n\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n\n\n".$output."\n\n";
+								echo 'remainder('.$remainder.') != 1 on line '.__LINE__."\n";
+								print_r($matches);
+								exit(1);
+							}
 							$composite = 1;
 							$factors = explode('*', $matches[2]);
 							foreach ($factors as $factor) {
@@ -100,9 +115,12 @@ do {
 								}
 								if ($ch = curl_init()) {
 									$data = [
-										'compositefactorization' => $one_line_factorization,
-										'gimps_login'            => $CONFIG['gimps_login'],
+										'compositefactorization' => (string) $one_line_factorization,
+										'gimps_login'            => (string) $CONFIG['gimps_login'],
 									];
+									if ($CONFIG['pretest']) {
+										$data['pretest_ratio'] = (float) $CONFIG['pretest_ratio'];
+									}
 									curl_setopt($ch, CURLOPT_CONNECTTIMEOUT,      10);
 									curl_setopt($ch, CURLOPT_TIMEOUT,             30);
 									curl_setopt($ch, CURLOPT_URL, $CONFIG['api_url']);
@@ -164,6 +182,7 @@ exit;
 						exit(1);
 					}
 				} else {
+					echo $URL_fetch."\n";
 					echo 'Unexpected value in worktodo:'."\n".$bignumber."\n";
 					exit(1);
 				}
