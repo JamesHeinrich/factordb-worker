@@ -6,7 +6,6 @@ $CONFIG = [
 	'max_digits'      =>  120,
 	'fetch_at_once'   =>  1,
 	'sleep_seconds'   =>  65,
-	'siqs_nfs_limit'  =>  false, // should normally be FALSE, can set to an integer (e.g. 100) to prevent doing SIQS/NFS on big numbers, only do ECM and SIQS/NFS on composites smaller than this
 	'pretest'         =>  false, // should normally be FALSE, can set to TRUE to enable pretest-only pre-factoring of composites
 	'pretest_ratio'   =>  0.25,  // only applies for "pretest" mode, for normal use set "plan" in yafu.ini
 	'log_factors'     => 'aliquot_factorization.txt', // set to emptystring to disable
@@ -33,7 +32,7 @@ function FilesCleanup() {
 	}
 	foreach (scandir(__DIR__) as $file) {
 		$filename = realpath($file);
-		if (preg_match('#^(\\.last_.+|nfs\\..+|.+\\.job|.+\\.out)$#i', $file)) {
+		if (preg_match('#^(\.last_.+|nfs\..+|.+\.job|.+\.out|rels[0-9]+_[0-9]+\.dat)$#i', $file)) {
 			echo 'Delete: '.$filename."\n";
 			unlink($filename);
 		}
@@ -71,7 +70,6 @@ do {
 					$command .= escapeshellarg($CONFIG['yafu_executable']);
 					$command .= ' '.escapeshellarg($bignumber);
 					$command .= ' -terse';
-					$command .= ($CONFIG['siqs_nfs_limit'] ? ' -max_siqs '.intval($CONFIG['siqs_nfs_limit']).' -max_nfs '.intval($CONFIG['siqs_nfs_limit']) : '');
 					$command .= ($CONFIG['pretest'] ? ' -pretest -plan custom -pretest_ratio '.number_format($CONFIG['pretest_ratio'], 4) : '');
 
 					$output = '';

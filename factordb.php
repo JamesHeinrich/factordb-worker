@@ -2,7 +2,7 @@
 // factordb.com work fetch/submit script
 // James Heinrich <james@mersenne.ca>
 // https://www.mersenneforum.org/node/22384
-// last-modified: 2026-07-29
+// last-modified: 2026-09-28
 
 $configFileName = 'factordb.json';
 $CONFIG = array();
@@ -11,6 +11,10 @@ if (is_readable($configFileName)) {
 	if ($configJSONtext = trim(file_get_contents($configFileName))) {
 		if ((substr($configJSONtext, 0, 1) == '{') && (substr($configJSONtext, -1, 1) == '}')) {
 			$CONFIG = json_decode($configJSONtext, true);
+			if (json_last_error() != JSON_ERROR_NONE) {
+				echo 'invalid JSON in '.realpath($configFileName)."\n:".json_last_error_msg()."\n";
+				exit(1);
+			}
 		}
 	}
 }
@@ -273,15 +277,11 @@ function FactorDB_fetch() {
 		if (preg_match('#^(.+)\\t([0-9]+)[\\r\\n]+(.+)\\t([0-9]+)$#', $rateRaw, $matches)) {
 			list($dummy, $date1, $count1, $date2, $count2) = $matches;
 			$seconds = strtotime($date2) - strtotime($date1);
-			$seconds_per = $seconds / max($count1 - $count2, 1);
-			$number_to_grab = max(ceil($CONFIG['batch_time'] / max($seconds_per, 0.1)), 1);
-
-			//echo date('Y-m-d H:i:s').' Target batch size for '.$CONFIG['batch_time'].'s is '.$number_to_grab."\n";
-			//if ($number_to_grab > $max_number_to_grab) {
-			//	echo date('Y-m-d H:i:s').' Target batch size for '.$CONFIG['batch_time'].'s is '.$number_to_grab.', but limiting to '.$max_number_to_grab.' for server reasons'."\n";
-			//}
-			//$number_to_grab = min($max_number_to_grab, $number_to_grab);
-			echo date('Y-m-d H:i:s').' Completed '.($count1 - $count2).' assignments in '.$seconds.' seconds, '.number_format($seconds_per, 3).'s avg, grabbing '.$number_to_grab.' new assignments for '.ceil($CONFIG['batch_time']).'s batch'."\n";
+			if ($seconds > 10) { // avoid wild changes of number_to_grab if last batch was abnormally fast
+				$seconds_per = $seconds / max($count1 - $count2, 1);
+				$number_to_grab = max(ceil($CONFIG['batch_time'] / max($seconds_per, 0.1)), 1);
+				echo date('Y-m-d H:i:s').' Completed '.($count1 - $count2).' assignments in '.$seconds.' seconds, '.number_format($seconds_per, 3).'s avg, grabbing '.$number_to_grab.' new assignments for '.ceil($CONFIG['batch_time']).'s batch'."\n";
+			}
 		}
 	}
 
