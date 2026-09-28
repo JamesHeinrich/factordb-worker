@@ -25,6 +25,7 @@ $configDefaults = array(
 	'skip_first'          => 1234,  // skip the smallest X composites, other people will likely grab them before you can return them
 	'batch_time'          => 600,   // target number of seconds for a batch of assignments, rate will be auto-adjusted to attempt to meet this
 	'sleepseconds'        => 300,   // number of seconds to sleep between retries if factordb.com does not respond as expected for get work or submit results
+	'sleepseconds_pause'  => 30,    // number of seconds to sleep between checking if a pause_while_running program was found to be running
 	'txtfile'             => __DIR__.DIRECTORY_SEPARATOR.'yafu-submissions_YYYYMMDD.txt',        // copy-append simplest factorization lines to this file after submitting each batch of results, YYYYMMDDHHMMSS will be replaced with today's datetimestamp or YYYYMMDD will be replaced with today's datestamp
 	'yafu_executable'     => __DIR__.DIRECTORY_SEPARATOR.'yafu'.(IS_WINDOWS ? '-x64.exe' : ''),
 	'cookie_jar'          => __DIR__.DIRECTORY_SEPARATOR.'cookies.txt',
@@ -175,7 +176,6 @@ function IsSleepTime() {
 function PauseWhileRunning() {
 	global $CONFIG;
 	static $lastCheckedTime = 0;
-	$check_pause_seconds = 60;
 
 	if (!IS_WINDOWS) {
 		// below code only works for Windows
@@ -183,7 +183,7 @@ function PauseWhileRunning() {
 	}
 	if (!empty($CONFIG['pause_while_running'])) {
 		if ($lastCheckedTime) {
-			if ($lastCheckedTime > (microtime(true) - $check_pause_seconds)) {
+			if ($lastCheckedTime > (microtime(true) - $CONFIG['sleepseconds_pause'])) {
 echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $lastCheckedTime, 3).'s ago), skipping current check'."\n\n\n";
 				return false;
 			}
@@ -193,19 +193,16 @@ echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $l
 		$paused_because = '';
 		$submitted_results = false;
 		do {
-			/*
-			TASKLIST only shows basename (e.g. "notepad.exe") does not include path information
-			If need to process paths can consider something like:
-			WMIC PROCESS WHERE "CommandLine LIKE '%steamapps%'" GET COMMANDLINE
-			This may be a bit slower, haven't really tested
-			*/
 			if (CheckForExit(false)) {
 				break;
 			}
-			$command = 'tasklist /FO CSV';
+			//$command = 'tasklist /FO CSV'; // tasklist just shows basename of executable, not path
+			$command = 'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ExecutablePath | ConvertTo-Csv -NoTypeInformation"';
 			if ($tasklist = shell_exec($command)) {
+//$runningPrograms = array_unique(explode("\n", str_replace("\r", '', str_replace('"', '', $tasklist))));
 				$found_programs = array();
-				foreach (explode(';', $CONFIG['pause_while_running']) as $process) {
+				foreach (explode(';', strtolower($CONFIG['pause_while_running'])) as $process) {
+//echo 'Looking for "'.$process.'" in $tasklist'."\n";
 					if (stripos($tasklist, $process) !== false) {
 						$found_programs[$process] = $process;
 						if (!$submitted_results) {
@@ -217,12 +214,12 @@ echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $l
 				if (!empty($found_programs)) {
 					if (empty($found_programs[$paused_because])) {
 						foreach ($found_programs as $process) {
-							echo "\n".date('c').' Paused because "'.$process.'" is running (checking every '.$check_pause_seconds.' seconds)'."\n";
+							echo "\n".date('c').' Paused because "'.$process.'" is running (checking every '.$CONFIG['sleepseconds_pause'].' seconds)'."\n";
 							$paused_because = $process;
 							break;
 						}
 					}
-					sleep($check_pause_seconds);
+					sleep($CONFIG['sleepseconds_pause']);
 				} else {
 					$paused_because = '';
 				}
