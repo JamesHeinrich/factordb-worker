@@ -2,7 +2,9 @@
 // factordb.com work fetch/submit script
 // James Heinrich <james@mersenne.ca>
 // https://www.mersenneforum.org/node/22384
-// last-modified: 2026-09-28
+// last-modified: 2026-10-06
+
+define('FACTORDB_API_URL_V3', 'https://factordb.com:4059/rpc');
 
 $configFileName = 'factordb.json';
 $CONFIG = array();
@@ -20,30 +22,31 @@ if (is_readable($configFileName)) {
 }
 define('IS_WINDOWS', (strtoupper(substr(PHP_OS, 0, 3)) == 'WIN'));
 $configDefaults = array(
-	'min_digits'          => 90,    // minimum number of digits for composites we want to factor
+	'min_digits'          =>  90,   // minimum number of digits for composites we want to factor
 	'max_digits'          => 100,   // maximum number of digits for composites we want to factor, if no work is available smaller than this then sit idle for <sleepseconds>
-	'skip_first'          => 1234,  // skip the smallest X composites, other people will likely grab them before you can return them
 	'batch_time'          => 600,   // target number of seconds for a batch of assignments, rate will be auto-adjusted to attempt to meet this
 	'sleepseconds'        => 300,   // number of seconds to sleep between retries if factordb.com does not respond as expected for get work or submit results
-	'sleepseconds_pause'  => 30,    // number of seconds to sleep between checking if a pause_while_running program was found to be running
+	'sleepseconds_pause'  =>  30,   // number of seconds to sleep between checking if a pause_while_running program was found to be running
 	'txtfile'             => __DIR__.DIRECTORY_SEPARATOR.'yafu-submissions_YYYYMMDD.txt',        // copy-append simplest factorization lines to this file after submitting each batch of results, YYYYMMDDHHMMSS will be replaced with today's datetimestamp or YYYYMMDD will be replaced with today's datestamp
 	'yafu_executable'     => __DIR__.DIRECTORY_SEPARATOR.'yafu'.(IS_WINDOWS ? '-x64.exe' : ''),
 	'cookie_jar'          => __DIR__.DIRECTORY_SEPARATOR.'cookies.txt',
 	'in_filename'         => __DIR__.DIRECTORY_SEPARATOR.'random_composites.txt',
-	//'composite_uniquelog' => __DIR__.DIRECTORY_SEPARATOR.'composites_unique.log',
 	'log_filename'        => __DIR__.DIRECTORY_SEPARATOR.'factor.log',
 	'json_filename'       => __DIR__.DIRECTORY_SEPARATOR.'factor.json',
 	'base10_filename'     => __DIR__.DIRECTORY_SEPARATOR.'factor.txt',
 	'rate_filename'       => __DIR__.DIRECTORY_SEPARATOR.'factordb.rate',
 	'sleep_during'        => '',    // optional, script will pause during these times, format "00:00-08:00;16:00-23:59" (etc)
 	'pause_while_running' => '',    // optional, script will pause if these program running, format "photoshop.exe;prime95.exe" (etc) substring match, case-insensitive; currently only implemented for Windows
-	'login_user'          => '',    // factordb.com username, without this your submission rate will be limited
-	'login_pass'          => '',    // factordb.com password, without this your submission rate will be limited
+	'fdb_user_token'      => '',    // factordb.com user token (32-char hex string found on https://factordb.com/login.php when logged in)
 );
 foreach ($configDefaults as $key => $value) {
 	if (!isset($CONFIG[$key])) {
 		$CONFIG[$key] = $value;
 	}
+}
+if (!preg_match('#^[0-9a-f]{32}$#i', $CONFIG['fdb_user_token'])) {
+	echo 'Missing or invalid $CONFIG[fdb_user_token]'."\n";
+	exit(1);
 }
 $configJSONtextNew = trim(json_encode($CONFIG, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 if ($configJSONtextNew != $configJSONtext) {
@@ -64,78 +67,10 @@ if (!empty($CONFIG['sleep_during'])) {
 }
 $CONFIG['_last_fetch_time'] = time(); // not really, just a safe initialization value
 
-function FactorDB_login() {
-	global $CONFIG;
-	if ($CONFIG['login_user'] && $CONFIG['login_pass'] && $CONFIG['cookie_jar']) {
-		if ($ch = curl_init()) {
-			$data = array(
-				'user'   => $CONFIG['login_user'],
-				'pass'   => $CONFIG['login_pass'],
-				'dlogin' => 'Login',
-			);
-			curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-			curl_setopt($ch, CURLOPT_TIMEOUT,        30);
-			curl_setopt($ch, CURLOPT_URL, 'http://factordb.com/login.php');
-			curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-			curl_setopt($ch, CURLOPT_COOKIEJAR, $CONFIG['cookie_jar']);
-			curl_setopt($ch, CURLOPT_POST, true);
-			curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
-			curl_setopt($ch, CURLOPT_HEADER, true);
-
-			do { // container loop to catch "SQLSTATE[HY000] [2002] Connection refused" errors
-				do {
-					$output = curl_exec($ch);
-					$info = curl_getinfo($ch);
-					if ($info['http_code'] != 200) {
-						echo date('c').' Login failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
-						sleep($CONFIG['sleepseconds']);
-						continue;
-					}
-				} while ($info['http_code'] != 200);
-
-				$head = substr($output, 0, $info['header_size']);
-				$body = substr($output, $info['header_size']);
-				if (preg_match('#^Set-Cookie: +fdbuser=([0-9a-f]{32});#m', $head, $matches)) {
-					// Set-Cookie: fdbuser=6f162a76ac69abebc7b94cd19d1b8ccd; expires=Tue, 01 Feb 2028 20:52:55 GMT; Max-Age=96000000
-					$sessionid = $matches[1];
-					echo $matches[0]."\n";
-					break;
-				} else {
-					echo "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n".$output."\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n";
-					echo date('c').' Failed to find "Set-Cookie: fdbuser" on CURL login'."\n";
-					echo date('c').' Sleeping for '.$CONFIG['sleepseconds'].' seconds...'."\n";
-					sleep($CONFIG['sleepseconds']);
-				}
-			} while (true);
-
-			do { // container loop to catch "parallel processing" errors
-				if (preg_match('#Logged in as \\<b\\>([^\\<]+)\\</b\\>#i', $output, $matches)) {
-					list($dummy, $logged_in_username) = $matches;
-					echo date('c').' Logged in as "'.$logged_in_username.'" (session ID: '.$sessionid.') [login overhead: '.number_format($info['total_time'], 3).'s]'."\n";
-					break;
-				} else {
-					if (preg_match('#You have reached the maximum of [0-9]+ parallel processing requests\\. +Please wait a few seconds and try again\\.#i', $output, $matches)) {
-						echo date('c').' '.$matches[0]."\n";
-						echo date('c').' Sleeping for '.$CONFIG['sleepseconds'].' seconds...'."\n";
-						sleep($CONFIG['sleepseconds']);
-					} else {
-						echo "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n".$output."\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n";
-						echo 'Failed to find "Logged in as [username]" on CURL login'."\n";
-						exit(1);
-					}
-				}
-			} while (true);
-		}
-	}
-	return true;
-}
-
 if (!empty($_SERVER['argv'][1])) {
 	if ($_SERVER['argv'][1] == 'submit') {
-		FactorDB_login();
 		FactorDB_submit();
 	} elseif ($_SERVER['argv'][1] == 'fetch') {
-		FactorDB_login();
 		FactorDB_fetch();
 	} elseif ($_SERVER['argv'][1] == 'cleanup') {
 		FilesCleanup();
@@ -149,16 +84,16 @@ if (!empty($_SERVER['argv'][1])) {
 function Rate1() {
 	global $CONFIG;
 	$assignmentCount = (($raw = trim(@file_get_contents($CONFIG['in_filename']))) ? count(explode("\n", $raw)) : 0);
-	return file_put_contents($CONFIG['rate_filename'], date('c')."\t".$assignmentCount);
+	return file_put_contents($CONFIG['rate_filename'], date('Y-m-d H:i:s')."\t".$assignmentCount);
 }
 function Rate2() {
 	global $CONFIG;
 	$assignmentCount = (($raw = trim(@file_get_contents($CONFIG['in_filename']))) ? count(explode("\n", $raw)) : 0);
-	return file_put_contents($CONFIG['rate_filename'], "\n".date('c')."\t".$assignmentCount, FILE_APPEND);
+	return file_put_contents($CONFIG['rate_filename'], "\n".date('Y-m-d H:i:s')."\t".$assignmentCount, FILE_APPEND);
 }
 function AvgRate($avg, $count) {
 	global $CONFIG;
-	return file_put_contents($CONFIG['rate_filename'], date('c', time() - ceil($avg * $count))."\t".$count."\n".date('c')."\t".'0');
+	return file_put_contents($CONFIG['rate_filename'], date('c', time() - ceil($avg * $count))."\t".$count."\n".date('Y-m-d H:i:s')."\t".'0');
 }
 function IsSleepTime() {
 	global $CONFIG;
@@ -212,13 +147,13 @@ echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $l
 					}
 				}
 				if (!empty($found_programs)) {
-					if (empty($found_programs[$paused_because])) {
+					//if (empty($found_programs[$paused_because])) {
 						foreach ($found_programs as $process) {
-							echo "\n".date('c').' Paused because "'.$process.'" is running (checking every '.$CONFIG['sleepseconds_pause'].' seconds)'."\n";
+							echo date('Y-m-d H:i:s').' Paused because "'.$process.'" is running (checking every '.$CONFIG['sleepseconds_pause'].' seconds)'."\n";
 							$paused_because = $process;
 							break;
 						}
-					}
+					//}
 					sleep($CONFIG['sleepseconds_pause']);
 				} else {
 					$paused_because = '';
@@ -232,40 +167,6 @@ echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $l
 	return true;
 }
 
-function curlGEThttp($URL, $description='') {
-	global $CONFIG;
-	if ($ch = curl_init()) {
-		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-		curl_setopt($ch, CURLOPT_TIMEOUT,        30);
-		curl_setopt($ch, CURLOPT_URL, $URL);
-		curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-		if (strtolower(substr($URL, 0, 5)) == 'https') {
-			curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
-			curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-		}
-		if (file_exists($CONFIG['cookie_jar']) && filesize($CONFIG['cookie_jar'])) {
-			curl_setopt($ch, CURLOPT_COOKIEFILE, $CONFIG['cookie_jar']);
-		}
-		$output = curl_exec($ch);
-		$info = curl_getinfo($ch);
-		do {
-			$output = curl_exec($ch);
-			$info = curl_getinfo($ch);
-			if ($info['http_code'] != 200) {
-				date('Y-m-d H:i:s').' error '.__LINE__.': '.$description.' failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
-				sleep($CONFIG['sleepseconds']);
-				continue;
-echo "\n".'DEBUG '.__FUNCTION__.':'.__LINE__."\n";
-echo "~~~~~~~~~~~~~~~\n".$output."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
-			}
-		} while ($info['http_code'] != 200);
-		return $output;
-	}
-	echo date('Y-m-d H:i:s').' error '.__LINE__.': Failed to curl_init()'."\n\n";
-	exit(1);
-	return false;
-}
-
 function FactorDB_fetch() {
 	global $CONFIG;
 
@@ -276,51 +177,80 @@ function FactorDB_fetch() {
 			$seconds = strtotime($date2) - strtotime($date1);
 			if ($seconds > 10) { // avoid wild changes of number_to_grab if last batch was abnormally fast
 				$seconds_per = $seconds / max($count1 - $count2, 1);
-				$number_to_grab = max(ceil($CONFIG['batch_time'] / max($seconds_per, 0.1)), 1);
+				$number_to_grab = min(500, max(ceil($CONFIG['batch_time'] / max($seconds_per, 0.1)), 1));
 				echo date('Y-m-d H:i:s').' Completed '.($count1 - $count2).' assignments in '.$seconds.' seconds, '.number_format($seconds_per, 3).'s avg, grabbing '.$number_to_grab.' new assignments for '.ceil($CONFIG['batch_time']).'s batch'."\n";
 			}
 		}
 	}
+	$Composites = [];
 
-	// http://factordb.com/listtype.php?t=3&download=1&mindig=80&start=12345&perpage=100
-	$max_number_to_grab = 100; // do not allow batch sizes larger than this; factordb.com sometimes times out if you try to grab too many at once
-	$output  = '';
-	$fetched = 0;
-	do {
-		$thisFetchSize = max(1, min($max_number_to_grab, $number_to_grab - $fetched));
-		$URL  = 'http://factordb.com/listtype.php?t=3';
-		$URL .= '&download=1';
-		$URL .= '&mindig='.$CONFIG['min_digits'];
-		$URL .= '&start='.($CONFIG['skip_first'] ?: 0) + $fetched;
-		$URL .= '&perpage='.$thisFetchSize;
-		echo date('Y-m-d H:i:s').' Fetching '.$thisFetchSize.' new assignments from '.$URL;
-		$fetch_starttime = microtime(true);
-		$output .= curlGEThttp($URL, 'Work fetch'); // plaintext output contains \n lineends
-		echo ' (done in '.number_format(microtime(true) - $fetch_starttime, 3).'s)'."\n";
-		$fetched += $thisFetchSize;
-	} while ($fetched < $number_to_grab);
-//echo '$output = '.strlen($output).' bytes'."\n";
-//echo '~~~~~~~~~~~~~~~~~~~~~~~~~~'."\n";
-//echo $output."\n";
-//echo '~~~~~~~~~~~~~~~~~~~~~~~~~~'."\n";
-	$allWorkToDo     = array();
-	$allWorkToDoTemp = array();
-	foreach (explode("\n", str_replace("\r", '', trim(@file_get_contents($CONFIG['in_filename'])."\n".$output))) as $line) {
-		// filter out any non-assignment data (e.g. error messages from server)
-		// also eliminate any duplicate entries
-		if (($composite = trim($line)) && ctype_digit($composite)) {
-			if (strlen($composite) >= $CONFIG['min_digits']) {
-				$allWorkToDoTemp[$composite] = log($composite, 2);
-			} else {
-				echo 'shorter than C'.$CONFIG['min_digits'].': '.$composite."\n";
-			}
+	$ch = curl_init(FACTORDB_API_URL_V3);
+	curl_setopt_array($ch, [
+		CURLOPT_CONNECTTIMEOUT =>  5,
+		CURLOPT_TIMEOUT        => 10,
+	    CURLOPT_RETURNTRANSFER => true,
+	    CURLOPT_POST           => true,
+	    CURLOPT_HTTPHEADER     => [
+	        'Content-Type: application/json',
+	        'X-Fdb-User-Token: '.$CONFIG['fdb_user_token'],
+	    ],
+	]);
+	for ($digits = $CONFIG['min_digits']; $digits <= $CONFIG['max_digits']; $digits++) {
+		$thisFetchSize = $number_to_grab - count($Composites);
+		if (count($Composites) >= $number_to_grab) {
+echo '$Composites now has '.count($Composites).', enough'."\n";
+			break;
+		} elseif ($thisFetchSize <= 0) {
+			echo '$thisFetchSize='.intval($thisFetchSize).', this is not right'."\n";
+echo '$number_to_grab='.$number_to_grab."\n";
+echo 'count($Composites)='.count($Composites)."\n";
+print_r($Composites);
+			exit(1);
 		}
+		$RPCdata = [
+		    'jsonrpc' => '2.0',
+		    'id'      => 1,
+		    'method'  => 'download',
+		    'params'  => [
+		        'table'  => 'C',
+		        'digits' => (int) $digits,
+		        'count'  => (int) $thisFetchSize,
+		        'random' => true,
+		        'terms'  => false, // if true returns "(139^71-139^35-1)/1139", if false just returns decimal digit strings
+		    ]
+		];
+		curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($RPCdata));
+echo 'Fetching C'.$digits.' composites, qty: '.$thisFetchSize."\n";
+		do {
+			$output = curl_exec($ch);
+			$info = curl_getinfo($ch);
+			if ($info['http_code'] == 200) {
+				$fdbJSON = json_decode($output, true, 512, JSON_BIGINT_AS_STRING);
+				if (json_last_error() == JSON_ERROR_NONE) {
+					if (!empty($fdbJSON['error'])) {
+						echo 'FactorDB work fetch error:'.print_r($fdbJSON, true);
+						exit(1);
+					}
+					foreach ($fdbJSON['result']['numbers'] as $composite) {
+						$Composites['x'.$composite] = $composite; // 'x' in key to force PHP to treat numberic-string key as string not number, and to enforce unique assignments from multiple fetches
+					}
+					break;
+				}
+				echo 'FactorDB work fetch returned invalid JSON:'."\n".print_r($info, true)."\n".$output."\n\n";
+				exit(1);
+			}
+			echo date('Y-m-d H:i:s').' Fetch Work failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
+echo "\n".'DEBUG '.__FUNCTION__.':'.__LINE__."\n";
+echo "~~~~~~~~~~~~~~~\n".$output."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
+			sleep($CONFIG['sleepseconds']);
+		} while ($info['http_code'] != 200);
 	}
-	asort($allWorkToDoTemp, SORT_STRING);
-	$allWorkToDo = array_keys($allWorkToDoTemp);
-	echo date('Y-m-d H:i:s').' '.basename($CONFIG['in_filename']).' now has '.number_format(count($allWorkToDo)).' assignments'."\n";
-	if (count($allWorkToDo)) {
-		file_put_contents($CONFIG['in_filename'], trim(implode("\n", $allWorkToDo))."\n"); // bug: YAFU v2.10 ignores last line in input file if it doesn't have a linebreak after
+	usort($Composites, 'gmp_cmp'); // sort into size order
+//echo '$Composites:'.print_r($Composites, true);
+
+	echo date('Y-m-d H:i:s').' '.basename($CONFIG['in_filename']).' now has '.number_format(count($Composites)).' assignments'."\n";
+	if (count($Composites)) {
+		file_put_contents($CONFIG['in_filename'], trim(implode("\n", $Composites))."\n"); // bug: YAFU v2.10 ignores last line in input file if it doesn't have a linebreak after
 	} else {
 		file_put_contents($CONFIG['in_filename'], ''); // set filesize to zero to prevent confusion/conflict
 	}
@@ -331,122 +261,93 @@ function FactorDB_fetch() {
 function FactorDB_submit() {
 	global $CONFIG;
 
-	$result_lines = array();  // parse results.json into composite=prime1*prime2
-	$runtimes     = array();  // actual runtimes from JSON results
-	$SubmittedComposites = array();
-	if (file_exists($CONFIG['base10_filename']) && filesize($CONFIG['base10_filename']))  {
-		foreach (explode("\n", file_get_contents($CONFIG['base10_filename'])) as $linecounter => $line) {
-			if ($line = trim($line)) {
-				if (preg_match('#^([0-9]+)=([0-9\\*]+)$#', $line, $matches)) {
-					list($dummy, $composite, $factorslist) = $matches;
-					$result_lines['c'.sprintf('%03d', strlen($composite)).'_'.$composite] = $composite.'='.$factorslist;
-					$SubmittedComposites[$composite] = 1;
-				}
-			}
-		}
-	} elseif (file_exists($CONFIG['json_filename']) && filesize($CONFIG['json_filename']))  {
+	$allRPCdata = [];  // array of JSON results for batch submission
+	$runtimes   = [];  // actual runtimes from JSON results
+	$result_lines_text = '';
+	if (file_exists($CONFIG['json_filename']) && filesize($CONFIG['json_filename']))  {
 		foreach (explode("\n", file_get_contents($CONFIG['json_filename'])) as $linecounter => $line) {
 			if ($line = trim($line)) {
-				if ((substr($line, 0, 1) == '{') && (substr($line, -1, 1) == '}')) {
-					$decoded = json_decode($line, true, 512, JSON_BIGINT_AS_STRING);
-					if (json_last_error() == JSON_ERROR_NONE) {
-						if (!empty($decoded['runtime']['total'])) {
-							$runtimes[] = $decoded['runtime']['total'];
-						}
-
-						$output  = $decoded['input-decimal'].'=';
-						if (!empty($decoded['factors-prime'])) {
-							$output .= implode('*', $decoded['factors-prime']);
-						}
-						if (!empty($decoded['factors-composite'])) {
-							$output .= (!empty($decoded['factors-prime']) ? '*' : '').implode('*', $decoded['factors-composite']);
-						}
-						$result_lines['c'.sprintf('%03d', strlen($decoded['input-decimal'])).'_'.$decoded['input-decimal']] = $output;
-						$SubmittedComposites[$decoded['input-decimal']] = 1;
-					} else {
-						echo 'JSON decode error:'."\n".$line."\n\n";
-						exit(1);
+				$decoded = json_decode($line, true, 512, JSON_BIGINT_AS_STRING);
+				if (json_last_error() == JSON_ERROR_NONE) {
+					if (!empty($decoded['runtime']['total'])) {
+						$runtimes[] = $decoded['runtime']['total'];
 					}
+					$factorlist = array_merge(($decoded['factors-prime'] ?? []), ($decoded['factors-composite'] ?? []));
+					$result_lines_text .= $decoded['input-decimal'].'='.implode('*', $factorlist)."\n";
+					$allRPCdata[] = [
+					    'jsonrpc' => '2.0',
+					    'id'      => 1,
+					    'method' => 'report_factors',
+					    'params' => [
+					        'target'  => ['expr' => (string) $decoded['input-decimal']],
+					        'factors' => $factorlist,
+					        'credit'  => true,
+					    ]
+					];
 				} else {
-					echo 'Unexpected non-JSON line['.($linecounter + 1).']:'."\n".$line."\n\n";
+					echo 'JSON decode error:'."\n".$line."\n\n";
 					exit(1);
 				}
 			}
 		}
-	}
-	if ($submit_counter = count($result_lines)) {
 		if (!empty($runtimes)) {
 			AvgRate(array_sum($runtimes) / count($runtimes), count($runtimes));
-		}
-		ksort($result_lines);
-
-		file_put_contents('results_submission_mostrecent.html', '');
-		$submit_slice_offset =  0;
-		$submit_slice_size   = 50;
-
-		for ($submit_slice_offset = 0; $submit_slice_offset < count($result_lines); $submit_slice_offset += $submit_slice_size) {
-			$slice = array_slice($result_lines, $submit_slice_offset, $submit_slice_size, true);
-			$slice_counter = count($slice);
-
-			//$result_lines_text = implode("\n", $result_lines)."\n";
-			$result_lines_text = implode("\n", $slice)."\n";
-			$data = array(
-				'report' => $result_lines_text,
-				'format' =>  7, // Multiple factors per line, base 10
-			);
-			if ($ch = curl_init()) {
-				// https://electrictoolbox.com/php-curl-form-post/
-				$ReportURL = 'http://factordb.com/report.php';
-				curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-				curl_setopt($ch, CURLOPT_TIMEOUT,        30);
-				curl_setopt($ch, CURLOPT_URL, $ReportURL);
-				curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-				if (file_exists($CONFIG['cookie_jar']) && filesize($CONFIG['cookie_jar'])) {
-					curl_setopt($ch, CURLOPT_COOKIEFILE, $CONFIG['cookie_jar']);
-				}
-				curl_setopt($ch, CURLOPT_POST, true);
-				curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
-echo $result_lines_text;
-				do {
-		    		echo date('Y-m-d H:i:s').' Submitting '.$slice_counter.' results ('.number_format(strlen($result_lines_text)).' bytes, batch '.($submit_slice_offset + 1).'-'.min($submit_slice_offset + $submit_slice_size, $submit_counter).' of '.$submit_counter.') to '.$ReportURL;
-		    		$submit_starttime = microtime(true);
-					$output = curl_exec($ch);
-					echo ' (done in '.number_format(microtime(true) - $submit_starttime, 3).'s)'."\n";
-					$info = curl_getinfo($ch);
-					if ($info['http_code'] != 200) {
-						echo date('Y-m-d H:i:s').' Submit Results failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
-echo "\n".'DEBUG '.__FUNCTION__.':'.__LINE__."\n";
-echo "~~~~~~~~~~~~~~~\n".$output."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
-						sleep($CONFIG['sleepseconds']);
-						continue;
-					}
-				} while ($info['http_code'] != 200);
-				$output = preg_replace('#<a href="(?!https?:\/\/)#', '<a href="https://factordb.com/', $output);
-				//file_put_contents('results_submission_'.date('Ymd-His').'.html', $output);
-				file_put_contents('results_submission_mostrecent.html', $output, FILE_APPEND);
-
-				if (preg_match('#Found ([0-9]+) factors and [0-9]+ ECM#', $output, $matches)) {
-					// Found 122 factors and 0 ECM/P-1/P+1 results.
-					echo 'Server accepted '.$matches[1].' factors from '.$slice_counter.' factorizations ('.number_format(($matches[1] / $slice_counter) * 100).'%)'."\n";
-				} else {
-					file_put_contents('results_submission_INCOMPLETE_'.date('Ymd-His').'.html', $output);
-					file_put_contents('results_submission_INCOMPLETE_'.date('Ymd-His').'.txt', $result_lines_text);
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
-echo 'Server did not accept all results!'."\n";
-echo 'Partially-accepted submission data saved to "results_submission_INCOMPLETE_'.date('Ymd-His').'.txt"'."\n";
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
-				}
-			} else {
-				date('Y-m-d H:i:s').' error '.__LINE__.': Failed to curl_init()'."\n\n";
-				exit(1);
-			}
 		}
 		if ($CONFIG['txtfile'] && !empty($result_lines_text)) {
 			file_put_contents(str_replace('YYYYMMDD', date('Ymd'), str_replace('YYYYMMDDHHMMSS', date('YmdHis'), $CONFIG['txtfile'])), $result_lines_text, FILE_APPEND);
 		}
 	}
+	if (!empty($allRPCdata)) {
+echo 'Submitting:'."\n";
+echo $result_lines_text."\n\n";
+//print_r($allRPCdata);
+//exit;
+
+		$ch = curl_init(FACTORDB_API_URL_V3);
+		curl_setopt_array($ch, [
+			CURLOPT_CONNECTTIMEOUT =>  5,
+			CURLOPT_TIMEOUT        => 10,
+		    CURLOPT_RETURNTRANSFER => true,
+		    CURLOPT_POST           => true,
+		    CURLOPT_POSTFIELDS     => json_encode($allRPCdata),
+		    CURLOPT_HTTPHEADER     => [
+		        'Content-Type: application/json',
+		        'X-Fdb-User-Token: '.$CONFIG['fdb_user_token'],
+		    ],
+		]);
+		$output = curl_exec($ch);
+		$info = curl_getinfo($ch);
+if (stripos($output, '"error"') !== false) {
+print_r($info);
+print_r($output);
+echo 'EXIT LINE '.__LINE__."\n";
+exit(1);
+}
+		if ($info['http_code'] == 200) {
+			$fdbJSON = json_decode($output, true, 512, JSON_BIGINT_AS_STRING);
+			if (json_last_error() == JSON_ERROR_NONE) {
+				if (count($fdbJSON) != count($allRPCdata)) {
+					echo 'Submitted '.count($allRPCdata).' results but found '.count($fdbJSON).' responses'."\n";
+					print_r($info);
+					print_r($output);
+					exit(1);
+				}
+			} else {
+				echo 'FactorDB report non-JSON response'."\n";
+				print_r($info);
+				print_r($output);
+				exit(1);
+			}
+		} else {
+			echo 'FactorDB HTTP-'.$info['http_code'].' response'."\n";
+			print_r($info);
+			print_r($output);
+			exit(1);
+		}
+	}
+
 	FilesCleanup();
-	return $submit_counter;
+	return count($allRPCdata);
 }
 
 function FactorDB_runbatch() {
@@ -584,7 +485,7 @@ exit(1);
 							exit(1);
 						}
 					} else {
-						echo $errmsg = "\n\n\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n".date('c')."\n\n".$output."\n\n".'Did not find FACTORS FOUND in output (err line '.__LINE__.')'."\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n";
+						echo $errmsg = "\n\n\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n".date('Y-m-d H:i:s')."\n\n".$output."\n\n".'Did not find FACTORS FOUND in output (err line '.__LINE__.')'."\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n";
 						file_put_contents('factordb_errors.log', $errmsg, FILE_APPEND);
 						if (preg_match('#(failed to (re)?allocate [0-9]+ bytes|error re\\-allocating in\\-memory storage of relations)#i', $output)) {
 							// failed to reallocate 1079470080 bytes
@@ -663,7 +564,6 @@ function CheckForExit($deletefile=false) {
 /////////////////////////////////////////////////////////////////////
 
 do {
-	FactorDB_login();
 	$submit_counter = FactorDB_submit();
 	if (!CheckForExit(false)) {
 		PauseWhileRunning();
