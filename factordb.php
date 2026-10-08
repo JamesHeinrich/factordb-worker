@@ -2,7 +2,7 @@
 // factordb.com work fetch/submit script
 // James Heinrich <james@mersenne.ca>
 // https://www.mersenneforum.org/node/22384
-// last-modified: 2026-10-06
+// last-modified: 2026-10-07
 
 define('FACTORDB_API_URL_V3', 'https://factordb.com:4059/rpc');
 
@@ -194,17 +194,19 @@ function FactorDB_fetch() {
 	        'Content-Type: application/json',
 	        'X-Fdb-User-Token: '.$CONFIG['fdb_user_token'],
 	    ],
+	    //CURLOPT_SSL_VERIFYPEER => false, // not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
+	    //CURLOPT_SSL_VERIFYHOST => false, // not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
 	]);
 	for ($digits = $CONFIG['min_digits']; $digits <= $CONFIG['max_digits']; $digits++) {
 		$thisFetchSize = $number_to_grab - count($Composites);
 		if (count($Composites) >= $number_to_grab) {
-echo '$Composites now has '.count($Composites).', enough'."\n";
+//echo '$Composites now has '.count($Composites).', enough'."\n";
 			break;
 		} elseif ($thisFetchSize <= 0) {
 			echo '$thisFetchSize='.intval($thisFetchSize).', this is not right'."\n";
-echo '$number_to_grab='.$number_to_grab."\n";
-echo 'count($Composites)='.count($Composites)."\n";
-print_r($Composites);
+			echo '$number_to_grab='.$number_to_grab."\n";
+			echo 'count($Composites)='.count($Composites)."\n";
+			print_r($Composites);
 			exit(1);
 		}
 		$RPCdata = [
@@ -239,9 +241,13 @@ echo 'Fetching C'.$digits.' composites, qty: '.$thisFetchSize."\n";
 				echo 'FactorDB work fetch returned invalid JSON:'."\n".print_r($info, true)."\n".$output."\n\n";
 				exit(1);
 			}
+			if ($curl_error = curl_error($ch)) {
+				echo 'CURL error: '."\n".$curl_error."\n\n";
+				exit(1);
+			}
 			echo date('Y-m-d H:i:s').' Fetch Work failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
 echo "\n".'DEBUG '.__FUNCTION__.':'.__LINE__."\n";
-echo "~~~~~~~~~~~~~~~\n".$output."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
+echo "~~~~~~~~~~~~~~~\n".$output."\n".print_r($info, true)."\n".curl_error($ch)."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
 			sleep($CONFIG['sleepseconds']);
 		} while ($info['http_code'] != 200);
 	}
@@ -314,36 +320,51 @@ echo $result_lines_text."\n\n";
 		        'Content-Type: application/json',
 		        'X-Fdb-User-Token: '.$CONFIG['fdb_user_token'],
 		    ],
+		    //CURLOPT_SSL_VERIFYPEER => false, // not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
+		    //CURLOPT_SSL_VERIFYHOST => false, // not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
 		]);
-		$output = curl_exec($ch);
-		$info = curl_getinfo($ch);
+		do {
+			$output = curl_exec($ch);
+			$info = curl_getinfo($ch);
 if (stripos($output, '"error"') !== false) {
 print_r($info);
 print_r($output);
 echo 'EXIT LINE '.__LINE__."\n";
 exit(1);
 }
-		if ($info['http_code'] == 200) {
-			$fdbJSON = json_decode($output, true, 512, JSON_BIGINT_AS_STRING);
-			if (json_last_error() == JSON_ERROR_NONE) {
-				if (count($fdbJSON) != count($allRPCdata)) {
-					echo 'Submitted '.count($allRPCdata).' results but found '.count($fdbJSON).' responses'."\n";
+			if ($info['http_code'] == 200) {
+				$fdbJSON = json_decode($output, true, 512, JSON_BIGINT_AS_STRING);
+				if (json_last_error() == JSON_ERROR_NONE) {
+					if (count($fdbJSON) == count($allRPCdata)) {
+						// looks like success, break out of submit loop
+						break;
+					} else {
+						echo 'Submitted '.count($allRPCdata).' results but found '.count($fdbJSON).' responses'."\n";
+						print_r($info);
+						print_r($output);
+						exit(1);
+					}
+				} else {
+					echo 'FactorDB report non-JSON response'."\n";
 					print_r($info);
 					print_r($output);
 					exit(1);
 				}
+			} elseif ($info['http_code'] == 502) {
+				// factorDB is not-working in a known way (502=Bad Gateway)
+				// sleep for a bit and try again
+				echo date('Y-m-d H:i:s').' Fetch Submit failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
+echo "\n".'DEBUG '.__FUNCTION__.':'.__LINE__."\n";
+echo "~~~~~~~~~~~~~~~\n".$output."\n".print_r($info, true)."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
+				sleep($CONFIG['sleepseconds']);
 			} else {
-				echo 'FactorDB report non-JSON response'."\n";
+				echo 'FactorDB HTTP-'.$info['http_code'].' response'."\n";
 				print_r($info);
 				print_r($output);
+				echo curl_error($ch);
 				exit(1);
 			}
-		} else {
-			echo 'FactorDB HTTP-'.$info['http_code'].' response'."\n";
-			print_r($info);
-			print_r($output);
-			exit(1);
-		}
+		} while ($info['http_code'] == 200);
 	}
 
 	FilesCleanup();
