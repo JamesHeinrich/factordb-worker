@@ -2,7 +2,7 @@
 // factordb.com work fetch/submit script
 // James Heinrich <james@mersenne.ca>
 // https://www.mersenneforum.org/node/22384
-// last-modified: 2026-10-07
+// last-modified: 2026-10-08
 
 define('FACTORDB_API_URL_V3', 'https://factordb.com:4059/rpc');
 
@@ -53,6 +53,7 @@ if ($configJSONtextNew != $configJSONtext) {
 	file_put_contents($configFileName, $configJSONtextNew);
 }
 
+$OPENSSL_ENABLED = (function_exists('openssl_get_cert_locations') && ($openssl_get_cert_locations = openssl_get_cert_locations()) && file_exists($openssl_get_cert_locations['default_cert_file'] ?? ''));
 
 $CONFIG['sleep_periods'] = array();
 if (!empty($CONFIG['sleep_during'])) {
@@ -168,7 +169,7 @@ echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $l
 }
 
 function FactorDB_fetch() {
-	global $CONFIG;
+	global $CONFIG, $OPENSSL_ENABLED;
 
 	$number_to_grab = 50; // assume fetch 50 assignments if we have no rate data
 	if (is_readable($CONFIG['rate_filename']) && ($rateRaw = trim(@file_get_contents($CONFIG['rate_filename'])))) {
@@ -186,17 +187,20 @@ function FactorDB_fetch() {
 
 	$ch = curl_init(FACTORDB_API_URL_V3);
 	curl_setopt_array($ch, [
-		CURLOPT_CONNECTTIMEOUT =>  5,
-		CURLOPT_TIMEOUT        => 10,
-	    CURLOPT_RETURNTRANSFER => true,
-	    CURLOPT_POST           => true,
-	    CURLOPT_HTTPHEADER     => [
-	        'Content-Type: application/json',
-	        'X-Fdb-User-Token: '.$CONFIG['fdb_user_token'],
-	    ],
-	    //CURLOPT_SSL_VERIFYPEER => false, // not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
-	    //CURLOPT_SSL_VERIFYHOST => false, // not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
+		CURLOPT_CONNECTTIMEOUT => 10,
+		CURLOPT_TIMEOUT        => 30,
+		CURLOPT_RETURNTRANSFER => true,
+		CURLOPT_POST           => true,
+		CURLOPT_HTTPHEADER     => [
+		    'Content-Type: application/json',
+		    'X-Fdb-User-Token: '.$CONFIG['fdb_user_token'],
+		],
 	]);
+	if (!$OPENSSL_ENABLED) {
+		// not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
+		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+		curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+	}
 	for ($digits = $CONFIG['min_digits']; $digits <= $CONFIG['max_digits']; $digits++) {
 		$thisFetchSize = $number_to_grab - count($Composites);
 		if (count($Composites) >= $number_to_grab) {
@@ -243,7 +247,11 @@ echo 'Fetching C'.$digits.' composites, qty: '.$thisFetchSize."\n";
 			}
 			if ($curl_error = curl_error($ch)) {
 				echo 'CURL error: '."\n".$curl_error."\n\n";
-				exit(1);
+				if (preg_match('#^(Connection|Operation) timed out after [0-9]+ milliseconds$#i', $curl_error)) {
+					// is ok
+				} else {
+					exit(1);
+				}
 			}
 			echo date('Y-m-d H:i:s').' Fetch Work failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
 echo "\n".'DEBUG '.__FUNCTION__.':'.__LINE__."\n";
@@ -265,7 +273,7 @@ echo "~~~~~~~~~~~~~~~\n".$output."\n".print_r($info, true)."\n".curl_error($ch).
 }
 
 function FactorDB_submit() {
-	global $CONFIG;
+	global $CONFIG, $OPENSSL_ENABLED;
 
 	$allRPCdata = [];  // array of JSON results for batch submission
 	$runtimes   = [];  // actual runtimes from JSON results
@@ -311,8 +319,8 @@ echo $result_lines_text."\n\n";
 
 		$ch = curl_init(FACTORDB_API_URL_V3);
 		curl_setopt_array($ch, [
-			CURLOPT_CONNECTTIMEOUT =>  5,
-			CURLOPT_TIMEOUT        => 10,
+			CURLOPT_CONNECTTIMEOUT => 10,
+			CURLOPT_TIMEOUT        => 30,
 		    CURLOPT_RETURNTRANSFER => true,
 		    CURLOPT_POST           => true,
 		    CURLOPT_POSTFIELDS     => json_encode($allRPCdata),
@@ -320,9 +328,12 @@ echo $result_lines_text."\n\n";
 		        'Content-Type: application/json',
 		        'X-Fdb-User-Token: '.$CONFIG['fdb_user_token'],
 		    ],
-		    //CURLOPT_SSL_VERIFYPEER => false, // not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
-		    //CURLOPT_SSL_VERIFYHOST => false, // not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
 		]);
+		if (!$OPENSSL_ENABLED) {
+			// not recommended but may be required on some PHP installations if you don't have CA certificates properly configured
+			curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+			curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+		}
 		do {
 			$output = curl_exec($ch);
 			$info = curl_getinfo($ch);
@@ -350,20 +361,21 @@ exit(1);
 					print_r($output);
 					exit(1);
 				}
-			} elseif ($info['http_code'] == 502) {
-				// factorDB is not-working in a known way (502=Bad Gateway)
-				// sleep for a bit and try again
-				echo date('Y-m-d H:i:s').' Fetch Submit failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
+			}
+			if ($curl_error = curl_error($ch)) {
+				echo 'CURL error: '."\n".$curl_error."\n\n";
+				if (preg_match('#^(Connection|Operation) timed out after [0-9]+ milliseconds$#i', $curl_error)) {
+					// is ok
+				} else {
+					exit(1);
+				}
+			}
+			// factorDB is not-working in a known way (502=Bad Gateway)
+			// sleep for a bit and try again
+			echo date('Y-m-d H:i:s').' Fetch Submit failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
 echo "\n".'DEBUG '.__FUNCTION__.':'.__LINE__."\n";
 echo "~~~~~~~~~~~~~~~\n".$output."\n".print_r($info, true)."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
-				sleep($CONFIG['sleepseconds']);
-			} else {
-				echo 'FactorDB HTTP-'.$info['http_code'].' response'."\n";
-				print_r($info);
-				print_r($output);
-				echo curl_error($ch);
-				exit(1);
-			}
+			sleep($CONFIG['sleepseconds']);
 		} while ($info['http_code'] == 200);
 	}
 
