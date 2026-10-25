@@ -2,12 +2,12 @@
 // factordb.com work fetch/submit script
 // James Heinrich <james@mersenne.ca>
 // https://www.mersenneforum.org/node/22384
-// last-modified: 2026-10-08
+// last-modified: 2026-10-24
 
 define('FACTORDB_API_URL_V3', 'https://factordb.com:4059/rpc');
 
 $configFileName = 'factordb.json';
-$CONFIG = array();
+$CONFIG = [];
 $configJSONtext = '';
 if (is_readable($configFileName)) {
 	if ($configJSONtext = trim(file_get_contents($configFileName))) {
@@ -21,7 +21,7 @@ if (is_readable($configFileName)) {
 	}
 }
 define('IS_WINDOWS', (strtoupper(substr(PHP_OS, 0, 3)) == 'WIN'));
-$configDefaults = array(
+$configDefaults = [
 	'min_digits'          =>  90,   // minimum number of digits for composites we want to factor
 	'max_digits'          => 100,   // maximum number of digits for composites we want to factor, if no work is available smaller than this then sit idle for <sleepseconds>
 	'batch_time'          => 600,   // target number of seconds for a batch of assignments, rate will be auto-adjusted to attempt to meet this
@@ -29,7 +29,6 @@ $configDefaults = array(
 	'sleepseconds_pause'  =>  30,   // number of seconds to sleep between checking if a pause_while_running program was found to be running
 	'txtfile'             => __DIR__.DIRECTORY_SEPARATOR.'yafu-submissions_YYYYMMDD.txt',        // copy-append simplest factorization lines to this file after submitting each batch of results, YYYYMMDDHHMMSS will be replaced with today's datetimestamp or YYYYMMDD will be replaced with today's datestamp
 	'yafu_executable'     => __DIR__.DIRECTORY_SEPARATOR.'yafu'.(IS_WINDOWS ? '-x64.exe' : ''),
-	'cookie_jar'          => __DIR__.DIRECTORY_SEPARATOR.'cookies.txt',
 	'in_filename'         => __DIR__.DIRECTORY_SEPARATOR.'random_composites.txt',
 	'log_filename'        => __DIR__.DIRECTORY_SEPARATOR.'factor.log',
 	'json_filename'       => __DIR__.DIRECTORY_SEPARATOR.'factor.json',
@@ -38,7 +37,7 @@ $configDefaults = array(
 	'sleep_during'        => '',    // optional, script will pause during these times, format "00:00-08:00;16:00-23:59" (etc)
 	'pause_while_running' => '',    // optional, script will pause if these program running, format "photoshop.exe;prime95.exe" (etc) substring match, case-insensitive; currently only implemented for Windows
 	'fdb_user_token'      => '',    // factordb.com user token (32-char hex string found on https://factordb.com/login.php when logged in)
-);
+];
 foreach ($configDefaults as $key => $value) {
 	if (!isset($CONFIG[$key])) {
 		$CONFIG[$key] = $value;
@@ -55,7 +54,7 @@ if ($configJSONtextNew != $configJSONtext) {
 
 $OPENSSL_ENABLED = (function_exists('openssl_get_cert_locations') && ($openssl_get_cert_locations = openssl_get_cert_locations()) && file_exists($openssl_get_cert_locations['default_cert_file'] ?? ''));
 
-$CONFIG['sleep_periods'] = array();
+$CONFIG['sleep_periods'] = [];
 if (!empty($CONFIG['sleep_during'])) {
 	foreach (explode(';', $CONFIG['sleep_during']) as $sleep_range) {
 		if (preg_match('#^([0-9]{2}:[0-9]{2})\\-([0-9]{2}:[0-9]{2})$#', $sleep_range, $matches)) {
@@ -81,6 +80,23 @@ if (!empty($_SERVER['argv'][1])) {
 	exit;
 }
 
+
+function evaluateGmpExpression(string $expression): string {
+	// convert expressions like "10^68*232-1" to their decimal-string equivalent (23199999999999999999999999999999999999999999999999999999999999999999999)
+	if (!preg_match('#^[0-9\+\-\^\*]+$#', $expression)) {
+		echo '$expression ('.$expression.') contains unexpected characters'."\n";
+		exit(1);
+	}
+	
+	// 1. Replace numbers with gmp_init("number") calls safely
+	$evaluable = preg_replace_callback('/\d+/', function ($matches) { return 'gmp_init(\''.$matches[0].'\')'; }, $expression);
+	
+	// 2. Convert exponentiation syntax if using '^'
+	$evaluable = str_replace('^', '**', $evaluable);
+	
+	// 3. Evaluate the expression where all terms are GMP objects
+	return gmp_strval(eval('return '.$evaluable.';'));
+}
 
 function Rate1() {
 	global $CONFIG;
@@ -113,11 +129,11 @@ function PauseWhileRunning() {
 	global $CONFIG;
 	static $lastCheckedTime = 0;
 
-	if (!IS_WINDOWS) {
-		// below code only works for Windows
-		return false;
-	}
 	if (!empty($CONFIG['pause_while_running'])) {
+		if (!IS_WINDOWS) {
+			// below code only works for Windows
+			return false;
+		}
 		if ($lastCheckedTime) {
 			if ($lastCheckedTime > (microtime(true) - $CONFIG['sleepseconds_pause'])) {
 echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $lastCheckedTime, 3).'s ago), skipping current check'."\n\n\n";
@@ -135,26 +151,29 @@ echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $l
 			//$command = 'tasklist /FO CSV'; // tasklist just shows basename of executable, not path
 			$command = 'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ExecutablePath | ConvertTo-Csv -NoTypeInformation"';
 			if ($tasklist = shell_exec($command)) {
-//$runningPrograms = array_unique(explode("\n", str_replace("\r", '', str_replace('"', '', $tasklist))));
-				$found_programs = array();
+				$found_programs = [];
 				foreach (explode(';', strtolower($CONFIG['pause_while_running'])) as $process) {
-//echo 'Looking for "'.$process.'" in $tasklist'."\n";
 					if (stripos($tasklist, $process) !== false) {
-						$found_programs[$process] = $process;
-						if (!$submitted_results) {
-							FactorDB_submit();
-							$submitted_results = true;
+						$runningPrograms = array_unique(explode("\n", str_replace("\r", '', str_replace('"', '', $tasklist))));
+						sort($runningPrograms);
+						foreach ($runningPrograms as $runningProgram) {
+							if (stripos($runningProgram, $process) !== false) {
+								$found_programs[$process] = $runningProgram;
+								if (!$submitted_results) {
+									FactorDB_submit();
+									$submitted_results = true;
+								}
+								break 2;
+							}
 						}
 					}
 				}
 				if (!empty($found_programs)) {
-					//if (empty($found_programs[$paused_because])) {
-						foreach ($found_programs as $process) {
-							echo date('Y-m-d H:i:s').' Paused because "'.$process.'" is running (checking every '.$CONFIG['sleepseconds_pause'].' seconds)'."\n";
-							$paused_because = $process;
-							break;
-						}
-					//}
+					foreach ($found_programs as $process) {
+						echo date('Y-m-d H:i:s').' Paused because "'.$process.'" is running (checking every '.$CONFIG['sleepseconds_pause'].' seconds)'."\r";
+						$paused_because = $process;
+						break;
+					}
 					sleep($CONFIG['sleepseconds_pause']);
 				} else {
 					$paused_because = '';
@@ -164,6 +183,7 @@ echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $l
 				exit(1);
 			}
 		} while ($paused_because);
+		echo "\n";
 	}
 	return true;
 }
@@ -238,6 +258,13 @@ echo 'Fetching C'.$digits.' composites, qty: '.$thisFetchSize."\n";
 						exit(1);
 					}
 					foreach ($fdbJSON['result']['numbers'] as $composite) {
+						if (!ctype_digit($composite) && preg_match('#^[0-9\+\-\^\*]+$#', $composite)) {
+							// factorDB sometimes hands out expression like instead of straight decimal numbers
+							// convert it to decimal representation for standardized handling in the rest of the code
+echo 'Converting expression '.$composite;
+							$composite = evaluateGmpExpression($composite);
+echo ' to decimal '.$composite."\n";;
+						}
 						$Composites['x'.$composite] = $composite; // 'x' in key to force PHP to treat numberic-string key as string not number, and to enforce unique assignments from multiple fetches
 					}
 					break;
@@ -247,7 +274,7 @@ echo 'Fetching C'.$digits.' composites, qty: '.$thisFetchSize."\n";
 			}
 			if ($curl_error = curl_error($ch)) {
 				echo 'CURL error: '."\n".$curl_error."\n\n";
-				if (preg_match('#^(Connection|Operation) timed out after [0-9]+ milliseconds$#i', $curl_error)) {
+				if (preg_match('#^(Connection|Operation) timed out after [0-9]+ milliseconds#i', $curl_error)) {
 					// is ok
 				} else {
 					exit(1);
@@ -311,9 +338,10 @@ function FactorDB_submit() {
 			file_put_contents(str_replace('YYYYMMDD', date('Ymd'), str_replace('YYYYMMDDHHMMSS', date('YmdHis'), $CONFIG['txtfile'])), $result_lines_text, FILE_APPEND);
 		}
 	}
+	$starttime_submit = microtime(true);
 	if (!empty($allRPCdata)) {
 echo 'Submitting:'."\n";
-echo $result_lines_text."\n\n";
+echo $result_lines_text;
 //print_r($allRPCdata);
 //exit;
 
@@ -335,6 +363,7 @@ echo $result_lines_text."\n\n";
 			curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 		}
 		do {
+			$starttime_submit = microtime(true);
 			$output = curl_exec($ch);
 			$info = curl_getinfo($ch);
 if (stripos($output, '"error"') !== false) {
@@ -364,7 +393,7 @@ exit(1);
 			}
 			if ($curl_error = curl_error($ch)) {
 				echo 'CURL error: '."\n".$curl_error."\n\n";
-				if (preg_match('#^(Connection|Operation) timed out after [0-9]+ milliseconds$#i', $curl_error)) {
+				if (preg_match('#^(Connection|Operation) timed out after [0-9]+ milliseconds#i', $curl_error)) {
 					// is ok
 				} else {
 					exit(1);
@@ -373,10 +402,11 @@ exit(1);
 			// factorDB is not-working in a known way (502=Bad Gateway)
 			// sleep for a bit and try again
 			echo date('Y-m-d H:i:s').' Fetch Submit failed: curl_getinfo[http_code]='.$info['http_code'].' (expected: 200). Sleeping for '.$CONFIG['sleepseconds'].' seconds'."\n";
-echo "\n".'DEBUG '.__FUNCTION__.':'.__LINE__."\n";
-echo "~~~~~~~~~~~~~~~\n".$output."\n".print_r($info, true)."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
+//echo "\n".'DEBUG '.__FUNCTION__.':'.__LINE__."\n";
+//echo "~~~~~~~~~~~~~~~\n".$output."\n".print_r($info, true)."\n~~~~~~~~~~~~~~~~~~~~~~~~~\n";
 			sleep($CONFIG['sleepseconds']);
 		} while ($info['http_code'] == 200);
+		echo 'Submitted '.count($allRPCdata).' results in '.number_format(microtime(true) - $starttime_submit, 3).' s'."\n\n";
 	}
 
 	FilesCleanup();
@@ -388,7 +418,7 @@ function FactorDB_runbatch() {
 	static $consecutive_sleeps = 0;
 	if ($raw = trim(@file_get_contents($CONFIG['in_filename']))) {
 		$lines = explode("\n", $raw);
-		$runtimes = array();
+		$runtimes = [];
 		while (count($lines)) {
 			if (CheckForExit(false)) {
 				break;
@@ -490,7 +520,7 @@ exit(1);
 						preg_match_all('#^([PC])([0-9]+) = ([0-9]+)$#m', $factorsfound[1], $matchset, PREG_SET_ORDER);
 						if (!empty($matchset)) {
 							$composite = 1;
-							$factors = array();
+							$factors = [];
 							foreach ($matchset as $entry) {
 								list($dummy, $PC, $digits, $factor) = $entry;
 								if ($digits == strlen($factor)) {
@@ -555,7 +585,7 @@ exit(1);
 function FilesCleanup() {
 	global $CONFIG;
 	$YAFUdir = dirname($CONFIG['yafu_executable']);
-	$FilesToCleanUp = array(
+	$FilesToCleanUp = [
 		__DIR__.DIRECTORY_SEPARATOR.basename($CONFIG['log_filename']),
 		__DIR__.DIRECTORY_SEPARATOR.basename($CONFIG['json_filename']),
 		__DIR__.DIRECTORY_SEPARATOR.basename($CONFIG['base10_filename']),
@@ -564,8 +594,8 @@ function FilesCleanup() {
 		$YAFUdir.DIRECTORY_SEPARATOR.'ggnfs.log',
 		$YAFUdir.DIRECTORY_SEPARATOR.'siqs.dat',
 		$YAFUdir.DIRECTORY_SEPARATOR.'__tmpbatchfile',
-	);
-	$DirsToScan = array_unique(array(__DIR__, $YAFUdir));
+	];
+	$DirsToScan = array_unique([__DIR__, $YAFUdir]);
 	foreach ($FilesToCleanUp as $filename) {
 		if (file_exists($filename)) {
 			echo 'Delete: '.$filename."\n";
@@ -585,7 +615,7 @@ function FilesCleanup() {
 function CheckForExit($deletefile=false) {
 	global $CONFIG;
 	if (file_exists('exit.txt')) {
-		echo 'exit.txt found, exiting'."\n";
+		echo "\n".'exit.txt found, exiting'."\n";
 		if ($deletefile) {
 			unlink('exit.txt');
 		}
