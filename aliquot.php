@@ -3,11 +3,12 @@ $CONFIG = [
 	'gimps_login'     => '', // ** REQUIRED **
 	'yafu_executable' => 'yafu-x64.exe',
 	'min_digits'      =>  70,
-	'max_digits'      => 120,
+	'max_digits'      => 200,
 	'fetch_at_once'   =>   1,
 	'sleep_seconds'   =>  65,
 	'pretest'         => false, // should normally be FALSE, can set to TRUE to enable pretest-only pre-factoring of composites
 	'pretest_ratio'   => 0.25,  // only applies for "pretest" mode, for normal use set "plan" in yafu.ini
+	'max_siqs'        =>  80,   // only applies for "pretest" mode, for normal use set "plan" in yafu.ini
 	'log_factors'     => 'aliquot_factorization.txt', // set to emptystring to disable
 	'api_url'         => 'https://www.mersenne.ca/aliquot/index.php',
 ];
@@ -83,7 +84,8 @@ do {
 					$command .= escapeshellarg($CONFIG['yafu_executable']);
 					$command .= ' '.escapeshellarg($bignumber);
 					$command .= ' -terse';
-					$command .= ($CONFIG['pretest'] ? ' -pretest -plan custom -pretest_ratio '.number_format($CONFIG['pretest_ratio'], 4) : '');
+					//$command .= ($CONFIG['pretest'] ? ' -pretest -plan custom -pretest_ratio '.number_format($CONFIG['pretest_ratio'], 4) : '');
+					$command .= ($CONFIG['pretest'] ? ' -max_siqs '.$CONFIG['max_siqs'].' -max_nfs '.$CONFIG['max_siqs'].' -plan custom -pretest_ratio '.number_format($CONFIG['pretest_ratio'], 4) : '');
 
 					$output = '';
 					if ($pipe = popen($command, 'rb')) {
@@ -195,11 +197,15 @@ exit;
 			}
 		}
 
+	} elseif ($curl_info['http_code'] == 204) {
+		echo date('Y-m-d H:i:s').' No'.($CONFIG['pretest'] ? ' pretest' : '').' work available ('.$CONFIG['min_digits'].'-'.$CONFIG['max_digits'].' digits), sleeping '.$CONFIG['sleep_seconds'].'s'."\n";
+		sleep($CONFIG['sleep_seconds']);
 	} else {
+echo $URL_fetch."\n";
 echo 'Unexpected CURL http_code='.$curl_info['http_code']."\n";
 var_dump($curl_output);
 var_dump($curl_info);
-		echo date('Y-m-d H:i:s').' No work available ('.$CONFIG['min_digits'].'-'.$CONFIG['max_digits'].' digits), sleeping '.$CONFIG['sleep_seconds'].'s'."\n";
+		echo date('Y-m-d H:i:s').' No'.($CONFIG['pretest'] ? ' pretest' : '').' work available ('.$CONFIG['min_digits'].'-'.$CONFIG['max_digits'].' digits), sleeping '.$CONFIG['sleep_seconds'].'s'."\n";
 		sleep($CONFIG['sleep_seconds']);
 	}
 } while (true);
