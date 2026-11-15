@@ -22,7 +22,7 @@ if (is_readable($configFileName)) {
 }
 define('IS_WINDOWS', (strtoupper(substr(PHP_OS, 0, 3)) == 'WIN'));
 $configDefaults = [
-	'min_digits'          =>  90,   // minimum number of digits for composites we want to factor
+	'min_digits'          =>  70,   // minimum number of digits for composites we want to factor
 	'max_digits'          => 100,   // maximum number of digits for composites we want to factor, if no work is available smaller than this then sit idle for <sleepseconds>
 	'batch_time'          => 600,   // target number of seconds for a batch of assignments, rate will be auto-adjusted to attempt to meet this
 	'sleepseconds'        => 300,   // number of seconds to sleep between retries if factordb.com does not respond as expected for get work or submit results
