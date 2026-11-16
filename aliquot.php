@@ -3,7 +3,7 @@ $CONFIG = [
 	'gimps_login'     => '', // ** REQUIRED **
 	'yafu_executable' => 'yafu-x64.exe',
 	'min_digits'      =>  70,
-	'max_digits'      => 200,
+	'max_digits'      => 120,
 	'fetch_at_once'   =>   1,
 	'sleep_seconds'   =>  65,
 	'pretest'         => false, // should normally be FALSE, can set to TRUE to enable pretest-only pre-factoring of composites
@@ -62,7 +62,15 @@ do {
 	if (CheckForExit(true)) {
 		break;
 	}
-	$URL_fetch = $CONFIG['api_url'].'?'.($CONFIG['pretest'] ? 'composites_to_pretest' : 'composites_to_factor').'='.$CONFIG['fetch_at_once'].'&min_digits='.$CONFIG['min_digits'].'&max_digits='.$CONFIG['max_digits'].'&gimps_login='.$CONFIG['gimps_login'];
+	$URL_fetch  = $CONFIG['api_url'];
+	$URL_fetch .= '?'.($CONFIG['pretest'] ? 'composites_to_pretest' : 'composites_to_factor').'='.$CONFIG['fetch_at_once'];
+	$URL_fetch .= '&min_digits='.$CONFIG['min_digits'];
+	$URL_fetch .= '&max_digits='.$CONFIG['max_digits'];
+	if ($CONFIG['pretest']) {
+		$URL_fetch .= '&pretest_ratio='.number_format($CONFIG['pretest_ratio'], 4);
+	}
+	$URL_fetch .= '&gimps_login='.$CONFIG['gimps_login'];
+//echo $URL_fetch."\n";
 	$ch = curl_init($URL_fetch);
 	curl_setopt_array($ch, [
 		CURLOPT_CONNECTTIMEOUT => 10,
@@ -77,15 +85,28 @@ do {
 	$curl_output = curl_exec($ch);
 	$curl_info = curl_getinfo($ch);
 	if ($curl_info['http_code'] == 200) {
-		foreach (explode("\n", $curl_output) as $bignumber) {
-			if ($bignumber = trim($bignumber)) {
+		foreach (explode("\n", $curl_output) as $workline) {
+			if ($CONFIG['pretest']) {
+				[$bignumber, $pretested] = array_pad(explode(',', trim($workline), 2), 2, '');
+			} else {
+				$bignumber = trim($workline);
+			}
+			if ($bignumber) {
 				if (ctype_digit($bignumber)) {
 					$command  = (IS_WINDOWS ? '' : 'nice -n 19 ');
 					$command .= escapeshellarg($CONFIG['yafu_executable']);
 					$command .= ' '.escapeshellarg($bignumber);
 					$command .= ' -terse';
-					//$command .= ($CONFIG['pretest'] ? ' -pretest -plan custom -pretest_ratio '.number_format($CONFIG['pretest_ratio'], 4) : '');
-					$command .= ($CONFIG['pretest'] ? ' -max_siqs '.$CONFIG['max_siqs'].' -max_nfs '.$CONFIG['max_siqs'].' -plan custom -pretest_ratio '.number_format($CONFIG['pretest_ratio'], 4) : '');
+					if ($CONFIG['pretest']) {
+						$command .= ' -max_siqs '.$CONFIG['max_siqs'];
+						$command .= ' -max_nfs '.$CONFIG['max_siqs'];
+						$command .= ' -plan custom';
+						$command .= ' -pretest_ratio '.number_format($CONFIG['pretest_ratio'], 4);
+						if ($pretested) {
+							$command .= ' -work '.number_format(floatval($pretested) * strlen($bignumber), 1);
+						}
+					}
+//echo $command."\n";
 
 					$output = '';
 					if ($pipe = popen($command, 'rb')) {
@@ -156,9 +177,9 @@ do {
 var_dump($curl_output);
 var_dump($curl_info);
 											echo date('Y-m-d H:i:s').' '.$CONFIG['api_url'].' did not return valid JSON'."\n";
+//exit;
 											echo date('Y-m-d H:i:s').' trying again in '.$CONFIG['sleep_seconds'].'s'."\n";
 											sleep($CONFIG['sleep_seconds']);
-//exit;
 										}
 										echo 'Reported C'.strlen($bignumber).' '.$bignumber.' to '.$CONFIG['api_url']."\n\n".str_repeat('~', 50)."\n\n";
 									} elseif ($curl_info['http_code'] == 0) {
