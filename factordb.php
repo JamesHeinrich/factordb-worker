@@ -271,11 +271,12 @@ function FactorDB_fetch() {
 		    'id'      => 1,
 		    'method'  => 'download',
 		    'params'  => [
-		        'table'  => 'C',
-		        'digits' => (int) $digits,
-		        'count'  => (int) $thisFetchSize,
-		        'random' => true,
-		        'terms'  => false, // if true returns "(139^71-139^35-1)/1139", if false just returns decimal digit strings
+		        'table'   => 'C',
+		        'digits'  => (int) $digits,
+		        'count'   => (int) $thisFetchSize,
+		        'random'  => true,
+		        'terms'   => false, // if true returns "(139^71-139^35-1)/1139", if false just returns decimal digit strings OR expression like "(22^25+1)^2-2" (unless "decimal":true is set)
+		        'decimal' => true,  // ONLY return decimal strings not expressions like "(22^25+1)^2-2"
 		    ]
 		];
 		curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($RPCdata));
