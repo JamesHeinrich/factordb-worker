@@ -2,7 +2,7 @@
 // factordb.com work fetch/submit script
 // James Heinrich <james@mersenne.ca>
 // https://www.mersenneforum.org/node/22384
-// last-modified: 2026-10-24
+// last-modified: 2026-11-25
 
 define('FACTORDB_API_URL_V3', 'https://factordb.com:4059/rpc');
 
@@ -53,6 +53,9 @@ if ($configJSONtextNew != $configJSONtext) {
 }
 
 $OPENSSL_ENABLED = (function_exists('openssl_get_cert_locations') && ($openssl_get_cert_locations = openssl_get_cert_locations()) && file_exists($openssl_get_cert_locations['default_cert_file'] ?? ''));
+//echo '$OPENSSL_ENABLED = ';
+//var_dump($OPENSSL_ENABLED);
+//exit;
 
 $CONFIG['sleep_periods'] = [];
 if (!empty($CONFIG['sleep_during'])) {
@@ -82,19 +85,40 @@ if (!empty($_SERVER['argv'][1])) {
 
 
 function evaluateGmpExpression(string $expression): string {
-	// convert expressions like "10^68*232-1" to their decimal-string equivalent (23199999999999999999999999999999999999999999999999999999999999999999999)
-	if (!preg_match('#^[0-9\+\-\^\*]+$#', $expression)) {
+	// Convert expressions like "10^68*232-1" or "(22^25+1)^2-2" to decimal strings
+	if (!preg_match('#^[0-9\+\-\^\*\(\)\s]+$#', $expression)) {
 		echo '$expression ('.$expression.') contains unexpected characters'."\n";
 		exit(1);
 	}
-	
-	// 1. Replace numbers with gmp_init("number") calls safely
-	$evaluable = preg_replace_callback('/\d+/', function ($matches) { return 'gmp_init(\''.$matches[0].'\')'; }, $expression);
-	
-	// 2. Convert exponentiation syntax if using '^'
+
+	// Remove whitespace so spacing around operators or parentheses does not affect parsing
+	$clean = preg_replace('/\s+/', '', $expression);
+
+	// Check balanced parentheses
+	$depth = 0;
+	for ($i = 0, $len = strlen($clean); $i < $len; $i++) {
+		if ($clean[$i] === '(') {
+			$depth++;
+		} elseif ($clean[$i] === ')') {
+			$depth--;
+			if ($depth < 0) {
+				echo '$expression ('.$expression.') has unmatched closing parenthesis'."\n";
+				exit(1);
+			}
+		}
+	}
+	if ($depth !== 0) {
+		echo '$expression ('.$expression.') has unclosed parenthesis'."\n";
+		exit(1);
+	}
+
+	// 1. Replace integer literals with gmp_init('...') calls
+	$evaluable = preg_replace_callback('/\d+/', function ($matches) { return 'gmp_init(\''.$matches[0].'\')'; }, $clean);
+
+	// 2. Convert '^' exponentiation to PHP '**' operator
 	$evaluable = str_replace('^', '**', $evaluable);
-	
-	// 3. Evaluate the expression where all terms are GMP objects
+
+	// 3. Evaluate the expression where operands are GMP objects
 	return gmp_strval(eval('return '.$evaluable.';'));
 }
 
@@ -129,62 +153,71 @@ function PauseWhileRunning() {
 	global $CONFIG;
 	static $lastCheckedTime = 0;
 
-	if (!empty($CONFIG['pause_while_running'])) {
-		if (!IS_WINDOWS) {
-			// below code only works for Windows
+	if (empty($CONFIG['pause_while_running'])) {
+		return true;
+	}
+	if (!IS_WINDOWS) {
+		// below code only works for Windows
+		return false;
+	}
+	if ($lastCheckedTime) {
+		if ($lastCheckedTime > (microtime(true) - $CONFIG['sleepseconds_pause'])) {
+echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $lastCheckedTime, 3).'s ago), skipping current check'."\n\n\n";
 			return false;
 		}
-		if ($lastCheckedTime) {
-			if ($lastCheckedTime > (microtime(true) - $CONFIG['sleepseconds_pause'])) {
-echo 'PauseWhileRunning() checked recently ('.number_format(microtime(true) - $lastCheckedTime, 3).'s ago), skipping current check'."\n\n\n";
-				return false;
-			}
-		}
+	}
 //echo 'PauseWhileRunning() not checked recently ('.($lastCheckedTime ? number_format(microtime(true) - $lastCheckedTime, 3).'s ago' : 'never').'), performing current check'."\n\n\n";
-		$lastCheckedTime = microtime(true);
-		$paused_because = '';
-		$submitted_results = false;
-		do {
-			if (CheckForExit(false)) {
-				break;
-			}
-			//$command = 'tasklist /FO CSV'; // tasklist just shows basename of executable, not path
-			$command = 'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ExecutablePath | ConvertTo-Csv -NoTypeInformation"';
-			if ($tasklist = shell_exec($command)) {
-				$found_programs = [];
-				foreach (explode(';', strtolower($CONFIG['pause_while_running'])) as $process) {
-					if (stripos($tasklist, $process) !== false) {
-						$runningPrograms = array_unique(explode("\n", str_replace("\r", '', str_replace('"', '', $tasklist))));
-						sort($runningPrograms);
-						foreach ($runningPrograms as $runningProgram) {
-							if (stripos($runningProgram, $process) !== false) {
-								$found_programs[$process] = $runningProgram;
-								if (!$submitted_results) {
-									FactorDB_submit();
-									$submitted_results = true;
-								}
-								break 2;
+	$lastCheckedTime = microtime(true);
+	$paused_because = '';
+	$submitted_results = false;
+	$outputFirstLine = false;
+	do {
+		if (CheckForExit(false)) {
+			break;
+		}
+		//$command = 'tasklist /FO CSV'; // tasklist just shows basename of executable, not path
+		//$command = 'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ExecutablePath | ConvertTo-Csv -NoTypeInformation"';
+		$command = 'powershell -NoProfile -Command "[System.Diagnostics.Process]::GetProcesses() | Where-Object { $_.Path } | Select-Object Path | ConvertTo-Csv -NoTypeInformation"';
+//echo $command."\n";
+//$before = microtime(true);
+		if ($tasklist = shell_exec($command)) {
+//echo number_format(microtime(true) - $before, 3).' seconds to run'."\n";
+//exit;
+			$found_programs = [];
+			foreach (explode(';', strtolower($CONFIG['pause_while_running'])) as $process) {
+				if (stripos($tasklist, $process) !== false) {
+					$runningPrograms = array_unique(explode("\n", str_replace("\r", '', str_replace('"', '', $tasklist))));
+					sort($runningPrograms);
+					foreach ($runningPrograms as $runningProgram) {
+						if (stripos($runningProgram, $process) !== false) {
+							$found_programs[$process] = $runningProgram;
+							if (!$submitted_results) {
+								FactorDB_submit();
+								$submitted_results = true;
 							}
+							break 2;
 						}
 					}
 				}
-				if (!empty($found_programs)) {
-					foreach ($found_programs as $process) {
-						echo date('Y-m-d H:i:s').' Paused because "'.$process.'" is running (checking every '.$CONFIG['sleepseconds_pause'].' seconds)'."\r";
-						$paused_because = $process;
-						break;
-					}
-					sleep($CONFIG['sleepseconds_pause']);
-				} else {
-					$paused_because = '';
-				}
-			} else {
-				echo 'FAIL: '.$command."\n\n";
-				exit(1);
 			}
-		} while ($paused_because);
-		echo "\n";
-	}
+			if (!empty($found_programs)) {
+				foreach ($found_programs as $process) {
+					echo date('Y-m-d H:i:s').' Paused because "'.$process.'" is running (checking every '.$CONFIG['sleepseconds_pause'].' seconds)'.(!$outputFirstLine ? "\n" : "\r"); // leave the initial output of when pause first happened, only overwrite the second line every <30> seconds
+					$outputFirstLine = true;
+					$paused_because = $process;
+					break;
+				}
+				sleep($CONFIG['sleepseconds_pause']);
+			} else {
+				$paused_because = '';
+			}
+		} else {
+			echo 'FAIL: '.$command."\n\n";
+			exit(1);
+		}
+	} while ($paused_because);
+	echo "\n";
+
 	return true;
 }
 
@@ -258,7 +291,7 @@ echo 'Fetching C'.$digits.' composites, qty: '.$thisFetchSize."\n";
 						exit(1);
 					}
 					foreach ($fdbJSON['result']['numbers'] as $composite) {
-						if (!ctype_digit($composite) && preg_match('#^[0-9\+\-\^\*]+$#', $composite)) {
+						if (!ctype_digit($composite)) {
 							// factorDB sometimes hands out expression like instead of straight decimal numbers
 							// convert it to decimal representation for standardized handling in the rest of the code
 echo 'Converting expression '.$composite;
@@ -273,10 +306,11 @@ echo ' to decimal '.$composite."\n";;
 				exit(1);
 			}
 			if ($curl_error = curl_error($ch)) {
-				echo 'CURL error: '."\n".$curl_error."\n\n";
+				echo 'CURL error ('.basename(__FILE__).':'.__LINE__.': '."\n".$curl_error."\n\n";
 				if (preg_match('#^(Connection|Operation) timed out after [0-9]+ milliseconds#i', $curl_error)) {
 					// is ok
 				} else {
+					print_r($info);
 					exit(1);
 				}
 			}
@@ -392,10 +426,11 @@ exit(1);
 				}
 			}
 			if ($curl_error = curl_error($ch)) {
-				echo 'CURL error: '."\n".$curl_error."\n\n";
+				echo 'CURL error ('.basename(__FILE__).':'.__LINE__.': '."\n".$curl_error."\n\n";
 				if (preg_match('#^(Connection|Operation) timed out after [0-9]+ milliseconds#i', $curl_error)) {
 					// is ok
 				} else {
+					print_r($info);
 					exit(1);
 				}
 			}
